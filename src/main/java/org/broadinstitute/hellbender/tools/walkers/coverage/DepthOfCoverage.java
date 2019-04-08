@@ -2,13 +2,13 @@ package org.broadinstitute.hellbender.tools.walkers.coverage;
 
 import htsjdk.samtools.SAMFileHeader;
 import htsjdk.samtools.SAMReadGroupRecord;
-import htsjdk.samtools.reference.FastaReferenceWriterBuilder;
 import org.apache.log4j.Logger;
 import org.broadinstitute.barclay.argparser.Argument;
 import org.broadinstitute.barclay.argparser.Advanced;
 import org.broadinstitute.barclay.argparser.CommandLineProgramProperties;
 import org.broadinstitute.barclay.help.DocumentedFeature;
 import org.broadinstitute.barclay.argparser.BetaFeature;
+import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.CoverageAnalysisProgramGroup;
 import org.broadinstitute.hellbender.engine.AlignmentContext;
 import org.broadinstitute.hellbender.engine.FeatureContext;
@@ -16,11 +16,12 @@ import org.broadinstitute.hellbender.engine.LocusWalker;
 import org.broadinstitute.hellbender.engine.ReferenceContext;
 import org.broadinstitute.hellbender.exceptions.UserException;
 import org.broadinstitute.hellbender.utils.BaseUtils;
+import org.broadinstitute.hellbender.utils.SimpleInterval;
 import org.broadinstitute.hellbender.utils.read.ReadUtils;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.file.Path;
 import java.util.*;
 
 
@@ -46,6 +47,12 @@ public class DepthOfCoverage extends LocusWalker {
 //    @Output
 //    @Multiplex(value=DoCOutputMultiplexer.class,arguments={"partitionTypes","refSeqGeneList","omitDepthOutput","omitIntervals","omitSampleSummary","omitLocusTable"})
 //    Map<DoCOutputType,PrintStream> out;
+    /**
+     * Base file name about which to create the coverage information
+     */
+    @Argument(fullName = StandardArgumentDefinitions.OUTPUT_LONG_NAME, shortName = StandardArgumentDefinitions.OUTPUT_SHORT_NAME, doc = "Base file location to which to write coverage summary information")
+    public String baseFileName = null;
+
     /**
      * Reads with mapping quality values lower than this threshold will be skipped. This is set to -1 by default to disable the evaluation and ignore this threshold.
      */
@@ -100,13 +107,15 @@ public class DepthOfCoverage extends LocusWalker {
      *
      */
     @Argument(fullName = "calculate-coverage-over-genes", shortName = "gene-list", doc = "Calculate coverage statistics over this list of genes", optional = true, mutex = "omit-interval-statistics")
-    File refSeqGeneList = null;
+            //MAJOR TODO, make sure this ends up behaving correctly with provided interval list
+            //TODO this should suppport other file output formats
+    Path refSeqGeneList = null;
 
     /**
      * Output file format (e.g. csv, table, rtable); defaults to r-readable table.
      */
     @Argument(fullName = "output-format", doc = "The format of the output file", optional = true)
-    DEPTH_OF_COVERAGE_OUTPUT_FORMAT outputFormat = DEPTH_OF_COVERAGE_OUTPUT_FORMAT.RTABLE;
+    CoverageOutputWriter.DEPTH_OF_COVERAGE_OUTPUT_FORMAT outputFormat = CoverageOutputWriter.DEPTH_OF_COVERAGE_OUTPUT_FORMAT.RTABLE;
 
 
     // ---------------------------------------------------------------------------
@@ -176,15 +185,12 @@ public class DepthOfCoverage extends LocusWalker {
     @Argument(fullName = "summaryCoverageThreshold", shortName = "ct", doc = "Coverage threshold (in percent) for summarizing statistics", optional = true)
     int[] coverageThresholds = {15};
 
-    String[] OUTPUT_FORMATS = {"table","rtable","csv"};
     String separator = "\t";
     Map<DoCOutputType.Partition, List<String>> orderCheck = new HashMap<DoCOutputType.Partition,List<String>>();
 
-    public enum DEPTH_OF_COVERAGE_OUTPUT_FORMAT {
-        TABLE,
-        RTABLE,
-        CSV
-    }
+    //TODO comment this
+    //Map of the running intervals to be computed over
+    private Map<SimpleInterval, CoveragePartitioner>
 
 
     @Override
@@ -200,10 +206,15 @@ public class DepthOfCoverage extends LocusWalker {
         }
 
         try {
-            writer = new FastaReferenceWriterBuilder()
-                    .setFastaFile(path)
-                    .setBasesPerLine(basesPerLine)
-                    .build();
+            writer = new CoverageOutputWriter(outputFormat,
+                    partitionTypes,
+                    refSeqGeneList, //TODO this is a placeholder for now until we have decided on a better option for the gene list
+                    baseFileName,
+                    printBaseCounts,
+                    omitDepthOutput,
+                    omitIntervals,
+                    omitSampleSummary,
+                    omitLocusTable);
         } catch (IOException e) {
             throw new UserException.CouldNotCreateOutputFile("Couldn't create " + output + ", encountered exception: " + e.getMessage(), e);
         }
@@ -260,6 +271,15 @@ public class DepthOfCoverage extends LocusWalker {
         }
     }
 
+    public CoveragePartitioner createRollingCoveragePartitioner() {
+        CoveragePartitioner aggro = new CoveragePartitioner(partitionTypes,start,stop,nBins);
+        for (DoCOutputType.Partition t : partitionTypes ) {
+            aggro.addIdentifiers(t,getSamplesFromToolKit(t));
+        }
+        aggro.initialize(includeDeletions,omitLocusTable);
+        checkOrder(aggro);
+        return aggro;
+    }
 
 
 
@@ -267,11 +287,33 @@ public class DepthOfCoverage extends LocusWalker {
 
     @Override
     public void apply(AlignmentContext alignmentContext, ReferenceContext referenceContext, FeatureContext featureContext) {
-        if (includeRefNBases || BaseUtils.isRegularBase(referenceContext.getBase())) {
+        // TODO evaluate consequences of supporting nonexistant references
+        if (includeRefNBases || (hasReference() && BaseUtils.isRegularBase(referenceContext.getBase()))) {
             Map<DoCOutputType.Partition, Map<String, int[]>> countsByPartition = CoverageUtils.getBaseCountsByPartition(alignmentContext, minMappingQuality, maxMappingQuality, minBaseQuality, maxBaseQuality, countType, partitionTypes);
 
-            if ( ! omi)
+            if ( ! omitDepthOutput) {
+                writer.writeDepths(partitionTypes, countsByPartition,prevReduce.getIdentifiersByType());
+            }
 
+
+            //TODO make sure this is correct, here is where the genome list must be handled
+
+
+
+            //TODO figure out what I want to do about this... it appears the old behavior
+//            for ( Pair<SimpleInterval, CoveragePartitioner> targetStats : statsByTarget ) {
+//                List<String> genes = getGeneNames(targetStats.first,refseqIterator);
+//                for (String gene : genes) {
+//                    if ( geneNamesToStats.keySet().contains(gene) ) {
+//                        logger.debug("Merging "+geneNamesToStats.get(gene).toString()+" and "+targetStats.second.getCoverageByAggregationType(DoCOutputType.Partition.sample).toString());
+//                        geneNamesToStats.get(gene).merge(targetStats.second.getCoverageByAggregationType(DoCOutputType.Partition.sample));
+//                    } else {
+//                        DepthOfCoverageStats merger = new DepthOfCoverageStats(targetStats.second.getCoverageByAggregationType(DoCOutputType.Partition.sample));
+//                        geneNamesToStats.put(gene,merger);
+//                        statsByGene.add(new Pair<String,DepthOfCoverageStats>(gene,merger));
+//                    }
+//                }
+//            }
         }
     }
 

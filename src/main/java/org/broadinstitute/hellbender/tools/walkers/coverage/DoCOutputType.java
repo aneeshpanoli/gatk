@@ -3,9 +3,6 @@ package org.broadinstitute.hellbender.tools.walkers.coverage;
 
 /**
  * Models a single output file in the DoC walker.
- *
- * @author mhanna
- * @version 0.1
  */
 public class DoCOutputType {
     public enum Partition { readgroup, sample, library, platform, center, sample_by_platform, sample_by_center, sample_by_platform_by_center }
@@ -24,16 +21,17 @@ public class DoCOutputType {
         this.fileType = fileType;
     }
 
-    public String getFileName(final String baseName) {
+    public String getFilePath(final String baseName) {
         // main output
-        if(partition == null)
+        if(partition == null) {
             return baseName;
+        }
 
-        if(baseName.trim().equals("/dev/null"))
+        // TODO handle this better
+        if(baseName.trim().equals("/dev/null")) {
             return "/dev/null";
+        }
 
-        // mhanna 22 Aug 2010 - Deliberately force this header replacement to make sure integration tests pass.
-        // TODO: Update integration tests and get rid of this.
         String partitionType = (partition == DoCOutputType.Partition.readgroup ? "read_group" : partition.toString());
 
         if(fileType == FileType.coverage_counts || fileType == FileType.coverage_proportions) {
@@ -55,11 +53,16 @@ public class DoCOutputType {
     }
 
     public boolean equals(Object other) {
-        if(!(other instanceof DoCOutputType))
+        if (other == null) {
             return false;
-        DoCOutputType otherOutputType = (DoCOutputType)other;
-        return partition == otherOutputType.partition &&
-                aggregation == otherOutputType.aggregation &&
-                fileType == otherOutputType.fileType;
+        }
+        if (other instanceof DoCOutputType) {
+            DoCOutputType otherOutputType = (DoCOutputType) other;
+            return partition == otherOutputType.partition &&
+                    aggregation == otherOutputType.aggregation &&
+                    fileType == otherOutputType.fileType;
+        }  else {
+            return false;
+        }
     }
 }

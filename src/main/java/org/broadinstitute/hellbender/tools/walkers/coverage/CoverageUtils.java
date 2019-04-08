@@ -155,10 +155,12 @@ public class CoverageUtils {
                     if (countElement(e, minMapQ, maxMapQ, minBaseQ, maxBaseQ)) {
                         countPileup.add(e);
                     }
-                    break;
                 }
+                break;
 
-            case COUNT_FRAGMENTS: // ignore base identities and put in FIRST base that passes filters:                throw new UnsupportedOperationException("This fragment counting is unsupported as of yet");
+                // TODO see FragmentUtils.create() for details on how the overlapping fragments are discounted
+            case COUNT_FRAGMENTS: // ignore base identities and put in FIRST base that passes filters:
+                throw new UnsupportedOperationException("This fragment counting is unsupported as of yet");
 //                fpile = context.getBasePileup().getStartSortedPileup().toFragments();
 //
 //                for (PileupElement e : fpile.getSingletonReads())

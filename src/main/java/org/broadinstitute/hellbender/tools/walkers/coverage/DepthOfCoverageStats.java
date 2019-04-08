@@ -40,11 +40,6 @@ import java.util.TreeMap;
  * @Date Feb 26, 2010
  */
 public class DepthOfCoverageStats {
-    ////////////////////////////////////////////////////////////////////////////////////
-    // STATIC DATA
-    ////////////////////////////////////////////////////////////////////////////////////
-
-    /* none so far */
 
     ////////////////////////////////////////////////////////////////////////////////////
     // STANDARD DATA
@@ -103,34 +98,34 @@ public class DepthOfCoverageStats {
 
     public DepthOfCoverageStats(int[] leftEndpoints) {
         this.binLeftEndpoints = leftEndpoints;
-        granularHistogramBySample = new HashMap<String,long[]>();
-        totalCoverages = new HashMap<String,Long>();
+        granularHistogramBySample = new HashMap<>();
+        totalCoverages = new HashMap<>();
         nLoci = 0;
         totalLocusDepth = 0;
         totalDepthOfCoverage = 0;
     }
 
-    public DepthOfCoverageStats(DepthOfCoverageStats cloneMe) {
-        this.binLeftEndpoints = cloneMe.binLeftEndpoints;
-        granularHistogramBySample = new TreeMap<String,long[]>();
-        totalCoverages = new TreeMap<String,Long>();
-        for ( String s : cloneMe.getAllSamples() ) {
-            granularHistogramBySample.put(s,new long[cloneMe.getHistograms().get(s).length]);
+    public DepthOfCoverageStats(DepthOfCoverageStats statsToClone) {
+        this.binLeftEndpoints = statsToClone.binLeftEndpoints;
+        granularHistogramBySample = new TreeMap<>();
+        totalCoverages = new TreeMap<>();
+        for ( String s : statsToClone.getAllSamples() ) {
+            granularHistogramBySample.put(s,new long[statsToClone.getHistograms().get(s).length]);
             for ( int i = 0; i < granularHistogramBySample.get(s).length; i++ ) {
-                granularHistogramBySample.get(s)[i] = cloneMe.getHistograms().get(s)[i];
+                granularHistogramBySample.get(s)[i] = statsToClone.getHistograms().get(s)[i];
             }
-            totalCoverages.put(s,cloneMe.totalCoverages.get(s));
+            totalCoverages.put(s,statsToClone.totalCoverages.get(s));
         }
 
-        this.includeDeletions = cloneMe.includeDeletions;
-        if ( cloneMe.tabulateLocusCounts ) {
-            this.locusCoverageCounts = new long[cloneMe.locusCoverageCounts.length][cloneMe.locusCoverageCounts[0].length];
+        this.includeDeletions = statsToClone.includeDeletions;
+        if ( statsToClone.tabulateLocusCounts ) {
+            this.locusCoverageCounts = new long[statsToClone.locusCoverageCounts.length][statsToClone.locusCoverageCounts[0].length];
         }
-        //this.granularHistogramBySample = cloneMe.granularHistogramBySample;
-        //this.totalCoverages = cloneMe.totalCoverages;
-        this.nLoci = cloneMe.nLoci;
-        this.totalDepthOfCoverage = cloneMe.totalDepthOfCoverage;
-        this.tabulateLocusCounts = cloneMe.tabulateLocusCounts;
+        //this.granularHistogramBySample = statsToClone.granularHistogramBySample;
+        //this.totalCoverages = statsToClone.totalCoverages;
+        this.nLoci = statsToClone.nLoci;
+        this.totalDepthOfCoverage = statsToClone.totalDepthOfCoverage;
+        this.tabulateLocusCounts = statsToClone.tabulateLocusCounts;
     }
 
     public void addSample(String sample) {
@@ -193,7 +188,7 @@ public class DepthOfCoverageStats {
 
     public void update(Map<String,int[]> countsBySample) {
         if ( countsBySample == null ) {
-            this.updateDepths(new HashMap<String,Integer>(1));
+            this.updateDepths(new HashMap<>(1));
             return;
         }
         // todo -- do we want to do anything special regarding base count or deletion statistics?
