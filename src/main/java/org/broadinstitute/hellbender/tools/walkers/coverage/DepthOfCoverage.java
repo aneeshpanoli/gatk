@@ -10,10 +10,7 @@ import org.broadinstitute.barclay.help.DocumentedFeature;
 import org.broadinstitute.barclay.argparser.BetaFeature;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.CoverageAnalysisProgramGroup;
-import org.broadinstitute.hellbender.engine.AlignmentContext;
-import org.broadinstitute.hellbender.engine.FeatureContext;
-import org.broadinstitute.hellbender.engine.LocusWalker;
-import org.broadinstitute.hellbender.engine.ReferenceContext;
+import org.broadinstitute.hellbender.engine.*;
 import org.broadinstitute.hellbender.exceptions.UserException;
 import org.broadinstitute.hellbender.utils.BaseUtils;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
@@ -35,7 +32,7 @@ import java.util.*;
         programGroup = CoverageAnalysisProgramGroup.class)
 @BetaFeature
 @DocumentedFeature
-public class DepthOfCoverage extends LocusWalker {
+public class DepthOfCoverage extends LocusWalkerByInterval {
     private final static Logger logger = Logger.getLogger(DepthOfCoverage.class);
     private CoverageOutputWriter writer;
 
@@ -177,6 +174,16 @@ public class DepthOfCoverage extends LocusWalker {
     @Advanced
     @Argument(fullName = "ignoreDeletionSites", doc = "Ignore sites consisting only of deletions", optional = true)
     boolean ignoreDeletionSites = false;
+
+    // We explicitly handle reference N bases in the code
+    public boolean includeNs() {
+        return true;
+    }
+
+    // We want to make sure to still generate coverage information over uncovered bases.
+    public boolean emitEmptyLoci() {
+        return true;
+    }
 
     /**
      * For summary file outputs, report the percentage of bases covered to an amount equal to or greater than this number  (e.g. % bases >= CT for each sample). Defaults to 15; can take multiple arguments.
