@@ -1,6 +1,6 @@
 /*
 * Copyright 2012-2016 Broad Institute, Inc.
-* 
+*
 * Permission is hereby granted, free of charge, to any person
 * obtaining a copy of this software and associated documentation
 * files (the "Software"), to deal in the Software without
@@ -9,10 +9,10 @@
 * copies of the Software, and to permit persons to whom the
 * Software is furnished to do so, subject to the following
 * conditions:
-* 
+*
 * The above copyright notice and this permission notice shall be
 * included in all copies or substantial portions of the Software.
-* 
+*
 * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
 * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -26,17 +26,12 @@
 package org.broadinstitute.hellbender.tools.walkers.coverage;
 
 import htsjdk.samtools.SAMReadGroupRecord;
-import htsjdk.samtools.SAMRecord;
-import org.broadinstitute.gatk.utils.BaseUtils;
-import org.broadinstitute.gatk.utils.contexts.AlignmentContext;
-import org.broadinstitute.gatk.utils.exceptions.ReviewedGATKException;
-import org.broadinstitute.gatk.utils.exceptions.UserException;
-import org.broadinstitute.gatk.utils.fragments.FragmentCollection;
-import org.broadinstitute.gatk.utils.pileup.PileupElement;
 import org.broadinstitute.hellbender.engine.AlignmentContext;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.exceptions.UserException;
+import org.broadinstitute.hellbender.utils.BaseUtils;
 import org.broadinstitute.hellbender.utils.pileup.PileupElement;
+import org.broadinstitute.hellbender.utils.read.GATKRead;
 
 import java.util.*;
 
@@ -248,15 +243,15 @@ public class CoverageUtils {
             try {
                 counts[BaseUtils.simpleBaseToBaseIndex(e.getBase())]++;
             } catch (ArrayIndexOutOfBoundsException exc) {
-                throw new ReviewedGATKException("Expected a simple base, but actually received"+(char)e.getBase());
+                throw new GATKException("Expected a simple base, but actually received"+(char)e.getBase());
             }
         }
     }
 
-    private static SAMReadGroupRecord getReadGroup(SAMRecord r) {
-        SAMReadGroupRecord rg = r.getReadGroup();
+    private static SAMReadGroupRecord getReadGroup(GATKRead r) {
+        String rg = r.getReadGroup();
         if ( rg == null ) {
-            String msg = "Read "+r.getReadName()+" lacks read group information; Please associate all reads with read groups";
+            String msg = "Read "+r.getName()+" lacks read group information; Please associate all reads with read groups";
             throw new UserException.MalformedBAM(r, msg);
         }
 

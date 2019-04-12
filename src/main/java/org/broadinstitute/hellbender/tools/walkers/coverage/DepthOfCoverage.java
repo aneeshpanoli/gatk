@@ -2,6 +2,7 @@ package org.broadinstitute.hellbender.tools.walkers.coverage;
 
 import htsjdk.samtools.SAMFileHeader;
 import htsjdk.samtools.SAMReadGroupRecord;
+import htsjdk.samtools.util.Locatable;
 import org.apache.log4j.Logger;
 import org.broadinstitute.barclay.argparser.Argument;
 import org.broadinstitute.barclay.argparser.Advanced;
@@ -11,13 +12,14 @@ import org.broadinstitute.barclay.argparser.BetaFeature;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.CoverageAnalysisProgramGroup;
 import org.broadinstitute.hellbender.engine.*;
+import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.exceptions.UserException;
 import org.broadinstitute.hellbender.utils.BaseUtils;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
+import org.broadinstitute.hellbender.utils.codecs.refseq.RefSeqFeature;
 import org.broadinstitute.hellbender.utils.read.ReadUtils;
 
 import java.io.IOException;
-import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.*;
 
@@ -48,65 +50,65 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
      * Base file name about which to create the coverage information
      */
     @Argument(fullName = StandardArgumentDefinitions.OUTPUT_LONG_NAME, shortName = StandardArgumentDefinitions.OUTPUT_SHORT_NAME, doc = "Base file location to which to write coverage summary information")
-    public String baseFileName = null;
+    private String baseFileName = null;
 
     /**
      * Reads with mapping quality values lower than this threshold will be skipped. This is set to -1 by default to disable the evaluation and ignore this threshold.
      */
     @Argument(fullName = "minMappingQuality", shortName = "mmq", doc = "Minimum mapping quality of reads to count towards depth", optional = true, minValue = 0, maxValue = Integer.MAX_VALUE)
-    int minMappingQuality = -1;
+    private int minMappingQuality = -1;
     /**
      * Reads with mapping quality values higher than this threshold will be skipped. The default value is the largest number that can be represented as an integer by the program.
      */
     @Argument(fullName = "maxMappingQuality", doc = "Maximum mapping quality of reads to count towards depth", optional = true, minValue = 0, maxValue = Integer.MAX_VALUE)
-    int maxMappingQuality = Integer.MAX_VALUE;
+    private int maxMappingQuality = Integer.MAX_VALUE;
     /**
      * Bases with quality scores lower than this threshold will be skipped. This is set to -1 by default to disable the evaluation and ignore this threshold.
      */
     @Argument(fullName = "minBaseQuality", shortName = "mbq", doc = "Minimum quality of bases to count towards depth", optional = true, minValue = 0, maxValue = Byte.MAX_VALUE)
-    byte minBaseQuality = -1;
+    private byte minBaseQuality = -1;
     /**
      * Bases with quality scores higher than this threshold will be skipped. The default value is the largest number that can be represented as a byte.
      */
     @Argument(fullName = "maxBaseQuality", doc = "Maximum quality of bases to count towards depth", optional = true, minValue = 0, maxValue = Byte.MAX_VALUE)
-    byte maxBaseQuality = Byte.MAX_VALUE;
+    private byte maxBaseQuality = Byte.MAX_VALUE;
 
     @Argument(fullName = "countType", doc = "How should overlapping reads from the same fragment be handled?", optional = true)
-    CoverageUtils.CountPileupType countType = CoverageUtils.CountPileupType.COUNT_READS;
+    private CoverageUtils.CountPileupType countType = CoverageUtils.CountPileupType.COUNT_READS;
 
     /**
      * Instead of reporting depth, the program will report the base pileup at each locus
      */
     @Argument(fullName = "printBaseCounts", shortName = "baseCounts", doc = "Add base counts to per-locus output", optional = true)
-    boolean printBaseCounts = false;
+    private boolean printBaseCounts = false;
 
     /**
      * Disabling the tabulation of locus statistics (# loci covered by sample by coverage) should speed up processing.
      */
     @Argument(fullName = "omitLocusTable", shortName = "omitLocusTable", doc = "Do not calculate per-sample per-depth counts of loci", optional = true)
-    boolean omitLocusTable = false;
+    private boolean omitLocusTable = false;
 
     /**
      * Disabling the tabulation of interval statistics (mean, median, quartiles AND # intervals by sample by coverage) should speed up processing. This option is required in order to use -nt parallelism.
      */
     @Argument(fullName = "omit-interval-statistics", doc = "Do not calculate per-interval statistics", optional = true, mutex = "calculate-coverage-over-genes")
-    boolean omitIntervals = false;
+    private boolean omitIntervals = false;
     /**
      * Disabling the tabulation of total coverage at every base should speed up processing.
      */
     @Argument(fullName = "omitDepthOutputAtEachBase", shortName = "omitBaseOutput", doc = "Do not output depth of coverage at each base", optional = true)
-    boolean omitDepthOutput = false;
+    private boolean omitDepthOutput = false;
 
     /**
      * Specify a RefSeq file for use in aggregating coverage statistics over genes.
-     *
+     * <p>
      * This argument is incompatible with --calculateCoverageOverGenes and --omitIntervalStatistics. A warning will be logged and no output file will be produced for the gene list if these arguments are enabled together.
-     *
      */
     @Argument(fullName = "calculate-coverage-over-genes", shortName = "gene-list", doc = "Calculate coverage statistics over this list of genes", optional = true, mutex = "omit-interval-statistics")
-            //MAJOR TODO, make sure this ends up behaving correctly with provided interval list
+    //MAJOR TODO, make sure this ends up behaving correctly with provided interval list
             //TODO this should suppport other file output formats
-    Path refSeqGeneList = null;
+            List<Path> refSeqGeneListFiles = null;
+    // TODO this is the right way to define this private List<FeatureInput<RefSeqFeature>> refSeqGeneList = null;
 
     /**
      * Output file format (e.g. csv, table, rtable); defaults to r-readable table.
@@ -126,50 +128,51 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
      */
     @Advanced
     @Argument(fullName = "includeRefNSites", doc = "Include sites where the reference is N", optional = true)
-    boolean includeRefNBases = false;
+    private boolean includeRefNBases = false;
     /**
      * TODO this is a debug option that seems a bit
      * Use this option to calibrate what bins you want before performing full calculations on your data.
      */
-    @Advanced
-    @Argument(fullName = "printBinEndpointsAndExit", doc = "Print the bin values and exit immediately", optional = true)
-    boolean printBinEndpointsAndExit = false;
+    // TODO worry about this feature later
+//    @Advanced
+//    @Argument(fullName = "printBinEndpointsAndExit", doc = "Print the bin values and exit immediately", optional = true)
+//    private boolean printBinEndpointsAndExit = false;
     /**
      * Sets the low-coverage cutoff for granular binning. All loci with depth < START are counted in the first bin.
      */
     @Advanced
     @Argument(fullName = "start", doc = "Starting (left endpoint) for granular binning", optional = true, minValue = 0)
-    int start = 1;
+    private int start = 1;
     /**
      * Sets the high-coverage cutoff for granular binning. All loci with depth > STOP are counted in the last bin.
      */
     @Advanced
     @Argument(fullName = "stop", doc = "Ending (right endpoint) for granular binning", optional = true, minValue = 1)
-    int stop = 500;
+    private int stop = 500;
     /**
      * Sets the number of bins for granular binning
      */
     @Advanced
     @Argument(fullName = "nBins", doc = "Number of bins to use for granular binning", optional = true, minValue = 0, minRecommendedValue = 1)
-    int nBins = 499;
+    private int nBins = 499;
 
     /**
      * This option simply disables writing separate files for per-sample summary statistics (total, mean, median, quartile coverage per sample). These statistics are still calculated internally, so enabling this option will not improve runtime.
      */
     @Argument(fullName = "omitPerSampleStats", shortName = "omitSampleSummary", doc = "Do not output the summary files per-sample", optional = true)
-    boolean omitSampleSummary = false;
+    private boolean omitSampleSummary = false;
     /**
      * By default, coverage is partitioning by sample, but it can be any combination of sample, readgroup and/or library.
      */
     @Argument(fullName = "partitionType", shortName = "pt", doc = "Partition type for depth of coverage", optional = true)
-    Set<DoCOutputType.Partition> partitionTypes = EnumSet.of(DoCOutputType.Partition.sample);
+    private Set<DoCOutputType.Partition> partitionTypes = EnumSet.of(DoCOutputType.Partition.sample);
 
     /**
      * Consider a spanning deletion as contributing to coverage. Also enables deletion counts in per-base output.
      */
     @Advanced
     @Argument(fullName = "includeDeletions", shortName = "dels", doc = "Include information on deletions", optional = true)
-    boolean includeDeletions = false;
+    private boolean includeDeletions = false;
 
     @Advanced
     @Argument(fullName = "ignoreDeletionSites", doc = "Ignore sites consisting only of deletions", optional = true)
@@ -192,25 +195,16 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
     @Argument(fullName = "summaryCoverageThreshold", shortName = "ct", doc = "Coverage threshold (in percent) for summarizing statistics", optional = true)
     int[] coverageThresholds = {15};
 
-    String separator = "\t";
-    Map<DoCOutputType.Partition, List<String>> orderCheck = new HashMap<DoCOutputType.Partition,List<String>>();
+    //    String separator = "\t";
+    Map<DoCOutputType.Partition, List<String>> orderCheck = new HashMap<DoCOutputType.Partition, List<String>>();
 
     //TODO comment this
     //Map of the running intervals to be computed over
-    private Map<SimpleInterval, CoveragePartitioner>
+    private DepthOfCoveragePartitioner coverageTotalsForEntireTraversal;
 
 
     @Override
     public void onTraversalStart() {
-        if ( printBinEndpointsAndExit ) {
-            int[] endpoints = DepthOfCoverageStats.calculateBinEndpoints(start,stop,nBins);
-            System.out.print("[ ");
-            for ( int e : endpoints ) {
-                System.out.print(e+" ");
-            }
-            System.out.println("]");
-            System.exit(0);
-        }
 
         try {
             writer = new CoverageOutputWriter(outputFormat,
@@ -226,89 +220,39 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
             throw new UserException.CouldNotCreateOutputFile("Couldn't create " + output + ", encountered exception: " + e.getMessage(), e);
         }
 
-//        // Check the output format
-//        boolean goodOutputFormat = false;
-//        for ( String f : OUTPUT_FORMATS ) {
-//            goodOutputFormat = goodOutputFormat || f.equals(outputFormat);
-//        }
-//
-//        if ( ! goodOutputFormat ) {
-//            throw new IllegalArgumentException("Improper output format. Can be one of table,rtable,csv. Was "+outputFormat);
-//        }
-        //TODO write an output parser
-        if ( outputFormat.equals("csv") ) {
-            separator = ",";
-        }
+        //TODO i'm pretty sure this is valid
+        writer.writeCoverageOutputHeaders(getSamplesByPartitionFromReadHeader(partitionTypes));
 
-        //TODO this becomes a header writer
-        if ( ! omitDepthOutput ) { // print header
-            PrintStream out = getCorrectStream(null, DoCOutputType.Aggregation.locus, DoCOutputType.FileType.summary);
-            out.printf("%s\t%s","Locus","Total_Depth");
-            for (DoCOutputType.Partition type : partitionTypes ) {
-                out.printf("\t%s_%s","Average_Depth",type.toString());
-            }
+        ReadUtils.getSamplesFromHeader(getHeaderForReads());
 
-            // get all the samples
-            HashSet<String> allSamples = getSamplesFromToolKit(partitionTypes);
-            ArrayList<String> allSampleList = new ArrayList<String>(allSamples.size());
-            for ( String s : allSamples ) {
-                allSampleList.add(s);
-            }
-            Collections.sort(allSampleList);
-
-            for ( String s : allSampleList) {
-                out.printf("\t%s_%s","Depth_for",s);
-                if ( printBaseCounts ) {
-                    out.printf("\t%s_%s",s,"base_counts");
-                }
-            }
-
-            out.printf("%n");
-
-        } else {
-            logger.info("Per-Locus Depth of Coverage output was omitted");
-        }
-
-        for (DoCOutputType.Partition type : partitionTypes ) {
-            orderCheck.put(type,new ArrayList<String>());
-            for ( String id : getSamplesFromToolKit(type) ) {
+        // TODO this will probably end up getting
+        for (DoCOutputType.Partition type : partitionTypes) {
+            orderCheck.put(type, new ArrayList<String>());
+            for (String id : getSamplesByPartitionFromReadHeader(type)) {
                 orderCheck.get(type).add(id);
             }
             Collections.sort(orderCheck.get(type));
         }
+
+        coverageTotalsForEntireTraversal = n
     }
-
-    public CoveragePartitioner createRollingCoveragePartitioner() {
-        CoveragePartitioner aggro = new CoveragePartitioner(partitionTypes,start,stop,nBins);
-        for (DoCOutputType.Partition t : partitionTypes ) {
-            aggro.addIdentifiers(t,getSamplesFromToolKit(t));
-        }
-        aggro.initialize(includeDeletions,omitLocusTable);
-        checkOrder(aggro);
-        return aggro;
-    }
-
-
-
-
 
     @Override
-    public void apply(AlignmentContext alignmentContext, ReferenceContext referenceContext, FeatureContext featureContext) {
+    public void apply(AlignmentContext alignmentContext, ReferenceContext referenceContext, FeatureContext featureContext, Set<Locatable> overlappingIntervals) {
         // TODO evaluate consequences of supporting nonexistant references
         if (includeRefNBases || (hasReference() && BaseUtils.isRegularBase(referenceContext.getBase()))) {
             Map<DoCOutputType.Partition, Map<String, int[]>> countsByPartition = CoverageUtils.getBaseCountsByPartition(alignmentContext, minMappingQuality, maxMappingQuality, minBaseQuality, maxBaseQuality, countType, partitionTypes);
 
-            if ( ! omitDepthOutput) {
-                writer.writeDepths(partitionTypes, countsByPartition,prevReduce.getIdentifiersByType());
+            if (!omitDepthOutput) {
+                writer.writePerLocusDepthSummary(referenceContext.getInterval(), partitionTypes, countsByPartition, prevReduce.getIdentifiersByType());
             }
 
 
             //TODO make sure this is correct, here is where the genome list must be handled
 
 
-
             //TODO figure out what I want to do about this... it appears the old behavior
-//            for ( Pair<SimpleInterval, CoveragePartitioner> targetStats : statsByTarget ) {
+//            for ( Pair<SimpleInterval, DepthOfCoveragePartitioner> targetStats : statsByTarget ) {
 //                List<String> genes = getGeneNames(targetStats.first,refseqIterator);
 //                for (String gene : genes) {
 //                    if ( geneNamesToStats.keySet().contains(gene) ) {
@@ -325,84 +269,170 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
     }
 
 
+    private Map<Locatable, DepthOfCoveragePartitioner> activeCoveragePartitioners = new HashMap<>();
+
+    public void onIntervalStart(Locatable activeInterval) {
+        if (activeInterval instanceof RefSeqFeature) {
+            getIntervalPartitioner();
+        }
+    }
+
+    // TODO this should have logic for handling if the gene didn't get completely covered
+    public void onIntervalEnd(Locatable activeInterval) {
+        if (activeInterval instanceof SimpleInterval) {
+            DepthOfCoveragePartitioner partitionerToRemove = activeCoveragePartitioners.remove(activeInterval);
+            writer.writeIntervalStats();
+
+
+
+        } else if (activeInterval instanceof RefSeqFeature) {
+
+        }
+    }
+
     @Override
     public Object onTraversalSuccess() {
-        if ( ! omitSampleSummary ) {
+        if (!omitSampleSummary) {
             logger.info("Outputting summary info");
-            for (DoCOutputType.Partition type : partitionTypes ) {
-                outputSummaryFiles(coverageProfiles,type);
+            for (DoCOutputType.Partition type : partitionTypes) {
+                writer.outputSummaryFiles(coverageProfiles, type);
             }
         }
 
-        if ( ! omitLocusTable ) {
+        if (!omitLocusTable) {
             logger.info("Outputting locus summary");
-            for (DoCOutputType.Partition type : partitionTypes ) {
-                outputLocusFiles(coverageProfiles,type);
+            for (DoCOutputType.Partition type : partitionTypes) {
+                writer.outputLocusFiles(coverageProfiles, type);
             }
         }
         return null;
     }
 
-    private void outputLocusFiles(CoveragePartitioner coverageProfiles, DoCOutputType.Partition type ) {
+
+
+
+
+    private DepthOfCoveragePartitioner createCoveragePartitioner() {
+        DepthOfCoveragePartitioner aggro = new DepthOfCoveragePartitioner(partitionTypes, start, stop, nBins);
+        for (DoCOutputType.Partition t : partitionTypes) {
+            aggro.addIdentifiers(t, getSamplesByPartitionFromReadHeader(t));
+        }
+        aggro.initialize(includeDeletions, omitLocusTable);
+        checkOrder(aggro);
+        return aggro;
+    }
+
+
+
+
+    private void outputLocusFiles(DepthOfCoveragePartitioner coverageProfiles, DoCOutputType.Partition type) {
         printPerLocus(getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.coverage_counts),
                 getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.coverage_proportions),
-                coverageProfiles.getCoverageByAggregationType(type),type);
+                coverageProfiles.getCoverageByAggregationType(type), type);
     }
 
-    private void outputSummaryFiles(CoveragePartitioner coverageProfiles, DoCOutputType.Partition type ) {
-        printPerSample(getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.statistics),coverageProfiles.getCoverageByAggregationType(type));
-        printSummary(getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.summary),coverageProfiles.getCoverageByAggregationType(type));
+    private void outputSummaryFiles(DepthOfCoveragePartitioner coverageProfiles, DoCOutputType.Partition type) {
+        printPerSample(getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.statistics), coverageProfiles.getCoverageByAggregationType(type));
+        printSummary(getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.summary), coverageProfiles.getCoverageByAggregationType(type));
     }
 
 
-
-
-
-
-
-
-    private HashSet<String> getSamplesFromToolKit( Collection<DoCOutputType.Partition> types ) {
-        HashSet<String> partitions = new HashSet<String>(); // since the DOCS object uses a HashMap, this will be in the same order
-        for (DoCOutputType.Partition t : types ) {
-            partitions.addAll(getSamplesFromToolKit(t));
+    private LinkedHashSet<String> getSamplesByPartitionFromReadHeader(Collection<DoCOutputType.Partition> types) {
+        LinkedHashSet<String> partitions = new LinkedHashSet<String>(); // since the DOCS object uses a HashMap, this will be in the same order
+        for (DoCOutputType.Partition t : types) {
+            partitions.addAll(getSamplesByPartitionFromReadHeader(t));
         }
-
         return partitions;
     }
 
-    private HashSet<String> getSamplesFromToolKit(DoCOutputType.Partition type) {
+    private Map<DoCOutputType.Partition, List<String>> makeGlobalIdentifierMap(Collection<DoCOutputType.Partition> types) {
+        Map<DoCOutputType.Partition, List<String>> partitions = new HashMap<>(); // since the DOCS object uses a HashMap, this will be in the same order
+        for (DoCOutputType.Partition t : types) {
+            partitions.addAll(getSamplesByPartitionFromReadHeader(t));
+        }
+        return partitions;
+    }
+
+    private HashSet<String> getSamplesByPartitionFromReadHeader(DoCOutputType.Partition type) {
         final HashSet<String> partition = new HashSet<String>();
         final SAMFileHeader header = getHeaderForReads();
         if (type == DoCOutputType.Partition.sample) {
             partition.addAll(ReadUtils.getSamplesFromHeader(header));
         } else {
-            for ( SAMReadGroupRecord rg : header.getReadGroups() ) {
+            for (SAMReadGroupRecord rg : header.getReadGroups()) {
                 partition.add(CoverageUtils.getTypeID(rg, type));
             }
         }
-        return  partition;
+        return partition;
+    }
+
+
+    /**
+     * We want to keep track of per-interval information for both the user specified intervals and for user specified genes
+     *
+     * @return A combined list of the unmerged user specified intervals and any specified refSeqFeatures specified
+     */
+    @Override
+    public List<Locatable> getIntervalObjectsToQueryOver() {
+        List<? extends Locatable> userProvidedIntervals = intervalArgumentCollection.getSpecifiedIntervalsWithoutMerging(getBestAvailableSequenceDictionary());
+
+        final List<Locatable> refSeqInputs = new ArrayList<>(userProvidedIntervals);
+        for (Path input : refSeqGeneListFiles) {
+            FeatureDataSource<RefSeqFeature> refSeqReader = new FeatureDataSource<>(input.toString());
+            for (final RefSeqFeature vcfRecord : refSeqReader) {
+                refSeqInputs.add(vcfRecord);
+            }
+        }
+        return refSeqInputs;
+    }
+
+
+
+    //TODO do we really need to do this going forwards?
+    //TODO I well understand this is a very crude way of keeping track of this information.... Ideally this should live
+    //TODO as a global immutible list that gets passed arround everywhere necessary....
+    private void checkOrder(DepthOfCoveragePartitioner ag) {
+        // make sure the ordering stored at initialize() is propagated along reduce
+        for (DoCOutputType.Partition t : partitionTypes ) {
+            List<String> order = orderCheck.get(t);
+            List<String> namesInAg = ag.getIdentifiersByType().get(t);
+
+            // todo -- chris check me
+            Set<String> namesInDOCS = ag.getCoverageByAggregationType(t).getAllSamples();
+            int index = 0;
+            for ( String s : namesInAg ) {
+                if ( ! s.equalsIgnoreCase(order.get(index)) ) {
+                    throw new GATKException("IDs are out of order for type "+t+"! Aggregator has different ordering");
+                }
+                index++;
+            }
+        }
     }
 }
 
 
-
-class CoveragePartitioner {
+/**
+ * A class for storing running intervalPartition data.
+ *
+ * This class is responsible for holding a running
+ */
+class DepthOfCoveragePartitioner {
     private Collection<DoCOutputType.Partition> types;
     private Map<DoCOutputType.Partition,DepthOfCoverageStats> coverageProfiles;
     private Map<DoCOutputType.Partition,List<String>> identifiersByType;
     private Set<String> allIdentifiers;
-    public CoveragePartitioner(Collection<DoCOutputType.Partition> typesToUse, int start, int stop, int nBins) {
-        coverageProfiles = new TreeMap<DoCOutputType.Partition,DepthOfCoverageStats>();
-        identifiersByType = new HashMap<DoCOutputType.Partition,List<String>>();
+    public DepthOfCoveragePartitioner(Collection<DoCOutputType.Partition> typesToUse, int start, int stop, int nBins) {
+        coverageProfiles = new TreeMap<>();
+        identifiersByType = new HashMap<>();
         types = typesToUse;
         for ( DoCOutputType.Partition type : types ) {
             coverageProfiles.put(type,new DepthOfCoverageStats(DepthOfCoverageStats.calculateBinEndpoints(start,stop,nBins)));
-            identifiersByType.put(type,new ArrayList<String>());
+            identifiersByType.put(type,new ArrayList<>());
         }
         allIdentifiers = new HashSet<String>();
     }
 
-    public void merge(CoveragePartitioner otherAggregator) {
+    public void merge(DepthOfCoveragePartitioner otherAggregator) {
         for ( DoCOutputType.Partition type : types ) {
             this.coverageProfiles.get(type).merge(otherAggregator.coverageProfiles.get(type));
         }

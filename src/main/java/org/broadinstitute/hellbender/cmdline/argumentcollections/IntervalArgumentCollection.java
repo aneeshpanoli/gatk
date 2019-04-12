@@ -140,6 +140,21 @@ public abstract class IntervalArgumentCollection implements Serializable {
     }
 
     /**
+     * Returns the full set of traversal parameters specified on the command line, including parsed intervals without
+     * merging intervals specified by the user on the command line. This is an advanced use case
+     *
+     * @param sequenceDict used to validate intervals
+     * @return the full set of traversal parameters specified on the command line
+     */
+    public List<SimpleInterval> getSpecifiedIntervalsWithoutMerging(final SAMSequenceDictionary sequenceDict ) {
+        if ( ! intervalsSpecified() ) {
+            throw new GATKException("Cannot call getTraversalParameters() without specifying either intervals to include or exclude.");
+        }
+
+        return parseIntervals(new GenomeLocParser(sequenceDict), IntervalMergingRule.NONE).getIntervalsForTraversal();
+    }
+
+    /**
      * Returns the full set of traversal parameters specified on the command line, including the parsed intervals
      * and a flag indicating whether unmapped records were requested.
      *
@@ -152,13 +167,13 @@ public abstract class IntervalArgumentCollection implements Serializable {
         }
 
         if ( traversalParameters == null ) {
-            parseIntervals(new GenomeLocParser(sequenceDict));
+            traversalParameters = parseIntervals(new GenomeLocParser(sequenceDict), intervalMergingRule);
         }
 
         return traversalParameters;
     }
 
-    private void parseIntervals(final GenomeLocParser genomeLocParser) {
+    private TraversalParameters parseIntervals(final GenomeLocParser genomeLocParser, final IntervalMergingRule intervalMergingRule) {
         // return if no interval arguments at all
         if (!intervalsSpecified()) {
             throw new GATKException("Cannot call parseIntervals() without specifying either intervals to include or exclude.");
@@ -211,7 +226,7 @@ public abstract class IntervalArgumentCollection implements Serializable {
             intervals.remove(GenomeLoc.UNMAPPED);
         }
 
-        traversalParameters = new TraversalParameters(IntervalUtils.convertGenomeLocsToSimpleIntervals(intervals.toList()), traverseUnmapped);
+        return new TraversalParameters(IntervalUtils.convertGenomeLocsToSimpleIntervals(intervals.toList()), traverseUnmapped);
     }
 
 

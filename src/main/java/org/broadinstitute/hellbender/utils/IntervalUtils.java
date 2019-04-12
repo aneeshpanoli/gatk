@@ -836,36 +836,6 @@ public final class IntervalUtils {
         }
     }
 
-    /**
-     * Check whether the second interval is completely contained within the frist interval
-     * <p>
-     *    Two locatables overlap if the share the same contig and the right interval shares
-     *    every base with the first interval.
-     * </p>
-     * <p>
-     *    This method returns {@code false} if either input {@link Locatable} has a {@code null}
-     *    contig.
-     * </p>
-     *
-     * @param left first locatable.
-     * @param right second locatable.
-     * @throws IllegalArgumentException if either {@code left} or {@code right} locatable
-     *  is {@code null}.
-     * @return {@code true} iff there is an overlap between both locatables.
-     */
-    public static boolean containsP(final Locatable left, final Locatable right) {
-        Utils.nonNull(left,"the left locatable is null");
-        Utils.nonNull(right,"the right locatable is null");
-        if (left.getContig() == null || right.getContig() == null) {
-            return false;
-        } else if (!left.getContig().equals(right.getContig())) {
-            return false;
-        } else {
-            return left.getStart() <= right.getStart() && left.getEnd() >= right.getEnd();
-        }
-    }
-
-
     public static String locatableToString(Locatable interval) {
         Utils.nonNull(interval);
         return String.format("%s:%s-%s", interval.getContig(), interval.getStart(), interval.getEnd());
@@ -938,6 +908,8 @@ public final class IntervalUtils {
      */
     public static List<GenomeLoc> mergeIntervalLocations(final List<GenomeLoc> raw, final IntervalMergingRule rule) {
         if (raw.size() <= 1) {
+            return Collections.unmodifiableList(raw);
+        } else if (rule == IntervalMergingRule.NONE) {
             return Collections.unmodifiableList(raw);
         } else {
             final ArrayList<GenomeLoc> merged = new ArrayList<>();

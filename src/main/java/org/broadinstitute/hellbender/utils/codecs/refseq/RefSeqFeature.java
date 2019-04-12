@@ -1,7 +1,9 @@
 package org.broadinstitute.hellbender.utils.codecs.refseq;
 
+import htsjdk.samtools.util.Locatable;
 import htsjdk.tribble.Feature;
 import org.broadinstitute.hellbender.exceptions.GATKException;
+import org.broadinstitute.hellbender.utils.IntervalUtils;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
 
 import java.util.List;
@@ -114,8 +116,8 @@ public class RefSeqFeature implements Transcript, Feature {
 //    }
 
 //    /** Returns true if the specified interval 'that' overlaps with the full genomic interval of this transcript */
-//    public boolean overlapsP (GenomeLoc that) {
-//        return getLocation().overlapsP(that);
+//    public boolean overlapsP (Locatable that) {
+//        return IntervalUtils.overlaps(this, that);
 //    }
 //
 //    /** Returns true if the specified interval 'that' overlaps with the coding genomic interval of this transcript.
@@ -123,17 +125,20 @@ public class RefSeqFeature implements Transcript, Feature {
 //     * but it will still contain introns and/or exons internal to this genomic locus that are not spliced into this transcript.
 //     * @see #overlapsExonP
 //     */
-//    public boolean overlapsCodingP (GenomeLoc that) {
+//    public boolean overlapsCodingP (Locatable that) {
 //        return transcript_coding_interval.overlapsP(that);
 //    }
 //
-//    /** Returns true if the specified interval 'that' overlaps with any of the exons actually spliced into this transcript */
-//    public boolean overlapsExonP (GenomeLoc that) {
-//        for ( SimpleInterval e : exons ) {
-//            if ( e.overlapsP(that) ) return true;
-//        }
-//        return false;
-//    }
+    /** Returns true if the specified interval 'that' overlaps with any of the exons actually spliced into this transcript */
+    public boolean overlapsAnyExon(Locatable that) {
+        for ( SimpleInterval exon : exons ) {
+            if ( IntervalUtils.overlaps(exon, that) ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public String toString() {
             StringBuilder b = new StringBuilder("000\t"); // first field is unused but required in th ecurrent format; just set to something
             b.append(transcript_id);   // #1
@@ -194,11 +199,6 @@ public class RefSeqFeature implements Transcript, Feature {
 
     public void setName(String name) {
         this.name = name;
-    }
-
-    @Override
-    public String getChr() {
-        return getContig();
     }
 
     @Override
