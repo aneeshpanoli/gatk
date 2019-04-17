@@ -104,29 +104,29 @@ public class DepthOfCoverageStats {
         totalLocusDepth = 0;
         totalDepthOfCoverage = 0;
     }
-
-    public DepthOfCoverageStats(DepthOfCoverageStats statsToClone) {
-        this.binLeftEndpoints = statsToClone.binLeftEndpoints;
-        granularHistogramBySample = new TreeMap<>();
-        totalCoverages = new TreeMap<>();
-        for ( String s : statsToClone.getAllSamples() ) {
-            granularHistogramBySample.put(s,new long[statsToClone.getHistograms().get(s).length]);
-            for ( int i = 0; i < granularHistogramBySample.get(s).length; i++ ) {
-                granularHistogramBySample.get(s)[i] = statsToClone.getHistograms().get(s)[i];
-            }
-            totalCoverages.put(s,statsToClone.totalCoverages.get(s));
-        }
-
-        this.includeDeletions = statsToClone.includeDeletions;
-        if ( statsToClone.tabulateLocusCounts ) {
-            this.locusCoverageCounts = new long[statsToClone.locusCoverageCounts.length][statsToClone.locusCoverageCounts[0].length];
-        }
-        //this.granularHistogramBySample = statsToClone.granularHistogramBySample;
-        //this.totalCoverages = statsToClone.totalCoverages;
-        this.nLoci = statsToClone.nLoci;
-        this.totalDepthOfCoverage = statsToClone.totalDepthOfCoverage;
-        this.tabulateLocusCounts = statsToClone.tabulateLocusCounts;
-    }
+//
+//    public DepthOfCoverageStats(DepthOfCoverageStats statsToClone) {
+//        this.binLeftEndpoints = statsToClone.binLeftEndpoints;
+//        granularHistogramBySample = new TreeMap<>();
+//        totalCoverages = new TreeMap<>();
+//        for ( String s : statsToClone.getAllSamples() ) {
+//            granularHistogramBySample.put(s,new long[statsToClone.getHistograms().get(s).length]);
+//            for ( int i = 0; i < granularHistogramBySample.get(s).length; i++ ) {
+//                granularHistogramBySample.get(s)[i] = statsToClone.getHistograms().get(s)[i];
+//            }
+//            totalCoverages.put(s,statsToClone.totalCoverages.get(s));
+//        }
+//
+//        this.includeDeletions = statsToClone.includeDeletions;
+//        if ( statsToClone.tabulateLocusCounts ) {
+//            this.locusCoverageCounts = new long[statsToClone.locusCoverageCounts.length][statsToClone.locusCoverageCounts[0].length];
+//        }
+//        //this.granularHistogramBySample = statsToClone.granularHistogramBySample;
+//        //this.totalCoverages = statsToClone.totalCoverages;
+//        this.nLoci = statsToClone.nLoci;
+//        this.totalDepthOfCoverage = statsToClone.totalDepthOfCoverage;
+//        this.tabulateLocusCounts = statsToClone.tabulateLocusCounts;
+//    }
 
     public void addSample(String sample) {
         if ( granularHistogramBySample.containsKey(sample) ) {
@@ -322,6 +322,11 @@ public class DepthOfCoverageStats {
         return totalDepthOfCoverage;
     }
 
+    /**
+     * Return a list of the counts
+     * @param sample
+     * @return
+     */
     public double[] getCoverageProportions(String sample) {
         long[] hist = granularHistogramBySample.get(sample);
         double[] distribution = new double[hist.length];
@@ -342,6 +347,13 @@ public class DepthOfCoverageStats {
         }
 
         return binLeftEndpoints.length-1;
+    }
+
+    /**
+     * Returns a count of the number of loci summarized in this object
+     */
+    public long getNumberOfLociCovered() {
+        return nLoci;
     }
 
 }

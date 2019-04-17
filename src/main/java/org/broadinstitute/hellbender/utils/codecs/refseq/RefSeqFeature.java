@@ -129,8 +129,26 @@ public class RefSeqFeature implements Transcript, Feature {
 //        return transcript_coding_interval.overlapsP(that);
 //    }
 //
+    /**
+     * Returns a count of the total number of reference bases spanned by gene summary. Will total the length of the exons or
+     * if absent, the lengthOnReference for the gene itself.
+     *
+     * NOTE: This currently makes the assumption that genes do not ever have overlapping exons. I do not know if this is a fair
+     *       assumption given extant RefSeqGeneList files.
+     */
+    public int getTotalExonLength() {
+        if (exons.isEmpty()) {
+            return getLengthOnReference();
+        }
+        return exons.stream().mapToInt(Locatable::getLengthOnReference).sum();
+    }
+
     /** Returns true if the specified interval 'that' overlaps with any of the exons actually spliced into this transcript */
-    public boolean overlapsAnyExon(Locatable that) {
+    @Override
+    public boolean contains(Locatable that) {
+        if (exons.isEmpty()) {
+            return getLocation().contains(that);
+        }
         for ( SimpleInterval exon : exons ) {
             if ( IntervalUtils.overlaps(exon, that) ) {
                 return true;

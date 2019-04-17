@@ -25,6 +25,7 @@
 
 package org.broadinstitute.hellbender.tools.walkers.coverage;
 
+import htsjdk.samtools.SAMFileHeader;
 import htsjdk.samtools.SAMReadGroupRecord;
 import org.broadinstitute.hellbender.engine.AlignmentContext;
 import org.broadinstitute.hellbender.exceptions.GATKException;
@@ -32,6 +33,7 @@ import org.broadinstitute.hellbender.exceptions.UserException;
 import org.broadinstitute.hellbender.utils.BaseUtils;
 import org.broadinstitute.hellbender.utils.pileup.PileupElement;
 import org.broadinstitute.hellbender.utils.read.GATKRead;
+import org.broadinstitute.hellbender.utils.read.ReadUtils;
 
 import java.util.*;
 
@@ -103,10 +105,10 @@ public class CoverageUtils {
     }
 
     public static Map<DoCOutputType.Partition,Map<String,int[]>>
-                    getBaseCountsByPartition(AlignmentContext context, int minMapQ, int maxMapQ, byte minBaseQ, byte maxBaseQ, CountPileupType countType, Collection<DoCOutputType.Partition> types) {
+                    getBaseCountsByPartition(AlignmentContext context, int minMapQ, int maxMapQ, byte minBaseQ, byte maxBaseQ, CountPileupType countType, Collection<DoCOutputType.Partition> types, SAMFileHeader header) {
 
         Map<DoCOutputType.Partition,Map<String,int[]>> countsByIDByType = new HashMap<DoCOutputType.Partition,Map<String,int[]>>();
-        Map<SAMReadGroupRecord,int[]> countsByRG = getBaseCountsByReadGroup(context,minMapQ,maxMapQ,minBaseQ,maxBaseQ,countType);
+        Map<SAMReadGroupRecord,int[]> countsByRG = getBaseCountsByReadGroup(context, minMapQ, maxMapQ, minBaseQ, maxBaseQ, countType, header);
         for (DoCOutputType.Partition t : types ) {
             // iterate through the read group counts and build the type associations
             for ( Map.Entry<SAMReadGroupRecord,int[]> readGroupCountEntry : countsByRG.entrySet() ) {
@@ -134,14 +136,14 @@ public class CoverageUtils {
         }
     }
 
-    public static Map<SAMReadGroupRecord,int[]> getBaseCountsByReadGroup(AlignmentContext context, int minMapQ, int maxMapQ, byte minBaseQ, byte maxBaseQ, CountPileupType countType) {
+    public static Map<SAMReadGroupRecord,int[]> getBaseCountsByReadGroup(AlignmentContext context, int minMapQ, int maxMapQ, byte minBaseQ, byte maxBaseQ, CountPileupType countType, SAMFileHeader header) {
         Map<SAMReadGroupRecord, int[]> countsByRG = new HashMap<SAMReadGroupRecord,int[]>();
 
         Map<String, int[]> countsByRGName = new HashMap<String, int[]>();
         Map<String, SAMReadGroupRecord> RGByName = new HashMap<String, SAMReadGroupRecord>();
 
         List<PileupElement> countPileup = new LinkedList<PileupElement>();
-        FragmentCollection<PileupElement> fpile;
+//        FragmentCollection<PileupElement> fpile;
 
         switch (countType) {
 
@@ -209,7 +211,7 @@ public class CoverageUtils {
         }
 
         for (PileupElement e : countPileup) {
-            SAMReadGroupRecord readGroup = getReadGroup(e.getRead());
+            SAMReadGroupRecord readGroup = getReadGroup(e.getRead(), header);
 
             // uniqueReadGroupID is unique across the library, read group ID, and the sample
             String uniqueReadGroupId = readGroup.getSample() + "_" + readGroup.getReadGroupId() + "_" + readGroup.getLibrary() + "_" + readGroup.getPlatformUnit();
@@ -248,8 +250,8 @@ public class CoverageUtils {
         }
     }
 
-    private static SAMReadGroupRecord getReadGroup(GATKRead r) {
-        String rg = r.getReadGroup();
+    private static SAMReadGroupRecord getReadGroup(final GATKRead r, SAMFileHeader header) {
+        SAMReadGroupRecord rg = ReadUtils.getSAMReadGroupRecord(r, header);
         if ( rg == null ) {
             String msg = "Read "+r.getName()+" lacks read group information; Please associate all reads with read groups";
             throw new UserException.MalformedBAM(r, msg);
@@ -257,4 +259,71 @@ public class CoverageUtils {
 
         return rg;
     }
+
+    /*
+     * @updateTargetTable
+     * The idea is to have counts for how many *targets* have at least K samples with
+     * median coverage of at least X.
+     * To that end:
+     * Iterate over the samples the DOCS object, determine how many there are with
+     * median coverage > leftEnds[0]; how many with median coverage > leftEnds[1]
+     * and so on. Then this target has at least N, N-1, N-2, ... 1, 0 samples covered
+     * to leftEnds[0] and at least M,M-1,M-2,...1,0 samples covered to leftEnds[1]
+     * and so on.
+     */
+    public static void updateTargetTable(int[][] table, DepthOfCoverageStats stats) {
+        int[] cutoffs = stats.getEndpoints();
+        int[] countsOfMediansAboveCutoffs = new int[cutoffs.length+1]; // 0 bin to catch everything
+//        for ( int i = 0; i < countsOfMediansAboveCutoffs.length; i ++) {
+//            countsOfMediansAboveCutoffs[i]=0;
+//        } //TODO why in the heck was this necessary... this
+
+        for ( String s : stats.getAllSamples() ) {
+            int medianBin = getQuantile(stats.getHistograms().get(s),0.5);
+            for ( int i = 0; i <= medianBin; i ++) {
+                countsOfMediansAboveCutoffs[i]++;
+            }
+        }
+
+        for ( int medianBin = 0; medianBin < countsOfMediansAboveCutoffs.length; medianBin++) {
+            for ( ; countsOfMediansAboveCutoffs[medianBin] > 0; countsOfMediansAboveCutoffs[medianBin]-- ) {
+                table[countsOfMediansAboveCutoffs[medianBin]-1][medianBin]++;
+                // the -1 is due to counts being 1-based and offsets being 0-based
+            }
+        }
+    }
+
+    //TODO commentme
+    public static double getPctBasesAbove(long[] histogram, int bin) {
+        long below = 0l;
+        long above = 0l;
+        for ( int index = 0; index < histogram.length; index++) {
+            if ( index < bin ) {
+                below+=histogram[index];
+            } else {
+                above+=histogram[index];
+            }
+        }
+
+        return 100*( (double) above )/( above + below );
+    }
+
+    //TODO commentme
+    public static int getQuantile(long[] histogram, double prop) {
+        int total = 0;
+
+        for ( int i = 0; i < histogram.length; i ++ ) {
+            total += histogram[i];
+        }
+
+        int counts = 0;
+        int bin = -1;
+        while ( counts < prop*total ) {
+            counts += histogram[bin+1];
+            bin++;
+        }
+
+        return bin == -1 ? 0 : bin;
+    }
+
 }

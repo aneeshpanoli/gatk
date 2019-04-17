@@ -12,6 +12,9 @@ import org.broadinstitute.barclay.argparser.BetaFeature;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.CoverageAnalysisProgramGroup;
 import org.broadinstitute.hellbender.engine.*;
+import org.broadinstitute.hellbender.engine.filters.ReadFilter;
+import org.broadinstitute.hellbender.engine.filters.ReadFilterLibrary;
+import org.broadinstitute.hellbender.engine.filters.WellformedReadFilter;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.exceptions.UserException;
 import org.broadinstitute.hellbender.utils.BaseUtils;
@@ -105,10 +108,15 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
      * This argument is incompatible with --calculateCoverageOverGenes and --omitIntervalStatistics. A warning will be logged and no output file will be produced for the gene list if these arguments are enabled together.
      */
     @Argument(fullName = "calculate-coverage-over-genes", shortName = "gene-list", doc = "Calculate coverage statistics over this list of genes", optional = true, mutex = "omit-interval-statistics")
+    private List<String> refSeqGeneListFiles = new ArrayList<>();
     //MAJOR TODO, make sure this ends up behaving correctly with provided interval list
-            //TODO this should suppport other file output formats
-            List<Path> refSeqGeneListFiles = null;
+    //TODO this should suppport other file output formats
     // TODO this is the right way to define this private List<FeatureInput<RefSeqFeature>> refSeqGeneList = null;
+    /**
+     * Remove genes from the gene summary output file if all of its exon bases were not completely covered by traversal.
+     */
+    @Argument(fullName = "omit-genes-not-entirely-covered-by-traversal", doc = "Do not output gene summary if it was not completely covered by traversal intervals", optional = true)
+    private boolean omitPartiallyCoveredGenes = false;
 
     /**
      * Output file format (e.g. csv, table, rtable); defaults to r-readable table.
@@ -165,7 +173,7 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
      * By default, coverage is partitioning by sample, but it can be any combination of sample, readgroup and/or library.
      */
     @Argument(fullName = "partitionType", shortName = "pt", doc = "Partition type for depth of coverage", optional = true)
-    private Set<DoCOutputType.Partition> partitionTypes = EnumSet.of(DoCOutputType.Partition.sample);
+    private EnumSet<DoCOutputType.Partition> partitionTypes = EnumSet.of(DoCOutputType.Partition.sample);
 
     /**
      * Consider a spanning deletion as contributing to coverage. Also enables deletion counts in per-base output.
@@ -193,14 +201,30 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
      */
     @Advanced
     @Argument(fullName = "summaryCoverageThreshold", shortName = "ct", doc = "Coverage threshold (in percent) for summarizing statistics", optional = true)
-    int[] coverageThresholds = {15};
+    private List<Integer> coverageThresholds = new ArrayList<>(Collections.singleton(15));
 
     //    String separator = "\t";
     Map<DoCOutputType.Partition, List<String>> orderCheck = new HashMap<DoCOutputType.Partition, List<String>>();
 
     //TODO comment this
     //Map of the running intervals to be computed over
-    private DepthOfCoveragePartitioner coverageTotalsForEntireTraversal;
+    private DepthOfCoveragePartitionedDataStore coverageTotalsForEntireTraversal;
+    private Map<DoCOutputType.Partition, List<String>> globalIdentifierMap;
+
+    @Override
+    public boolean includeDeletions() {
+        return includeDeletions && ! ignoreDeletionSites;
+    }
+
+    @Override
+    public List<ReadFilter> getDefaultReadFilters() {
+        final List<ReadFilter> defaultFilters = new ArrayList<>(2);
+        defaultFilters.add(new WellformedReadFilter());
+        defaultFilters.add(new ReadFilterLibrary.NotDuplicateReadFilter());
+        defaultFilters.add(new ReadFilterLibrary.PrimaryLineReadFilter());
+        defaultFilters.add(new ReadFilterLibrary.MappedReadFilter());
+        return defaultFilters;
+    }
 
 
     @Override
@@ -209,19 +233,19 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
         try {
             writer = new CoverageOutputWriter(outputFormat,
                     partitionTypes,
-                    refSeqGeneList, //TODO this is a placeholder for now until we have decided on a better option for the gene list
                     baseFileName,
+                    !refSeqGeneListFiles.isEmpty(),
                     printBaseCounts,
                     omitDepthOutput,
                     omitIntervals,
                     omitSampleSummary,
                     omitLocusTable);
         } catch (IOException e) {
-            throw new UserException.CouldNotCreateOutputFile("Couldn't create " + output + ", encountered exception: " + e.getMessage(), e);
+            throw new UserException.CouldNotCreateOutputFile("Couldn't create output file, encountered exception: " + e.getMessage(), e);
         }
 
-        //TODO i'm pretty sure this is valid
-        writer.writeCoverageOutputHeaders(getSamplesByPartitionFromReadHeader(partitionTypes));
+        globalIdentifierMap = makeGlobalIdentifierMap(partitionTypes);
+        writer.writeCoverageOutputHeaders(globalIdentifierMap, getSamplesByPartitionFromReadHeader(partitionTypes), coverageThresholds);
 
         ReadUtils.getSamplesFromHeader(getHeaderForReads());
 
@@ -234,25 +258,32 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
             Collections.sort(orderCheck.get(type));
         }
 
-        coverageTotalsForEntireTraversal = n
+        coverageTotalsForEntireTraversal = createCoveragePartitioner();
     }
 
     @Override
     public void apply(AlignmentContext alignmentContext, ReferenceContext referenceContext, FeatureContext featureContext, Set<Locatable> overlappingIntervals) {
         // TODO evaluate consequences of supporting nonexistant references
         if (includeRefNBases || (hasReference() && BaseUtils.isRegularBase(referenceContext.getBase()))) {
-            Map<DoCOutputType.Partition, Map<String, int[]>> countsByPartition = CoverageUtils.getBaseCountsByPartition(alignmentContext, minMappingQuality, maxMappingQuality, minBaseQuality, maxBaseQuality, countType, partitionTypes);
+            final Map<DoCOutputType.Partition, Map<String, int[]>> countsByPartition = CoverageUtils.getBaseCountsByPartition(alignmentContext, minMappingQuality, maxMappingQuality, minBaseQuality, maxBaseQuality, countType, partitionTypes, getHeaderForReads());
 
             if (!omitDepthOutput) {
-                writer.writePerLocusDepthSummary(referenceContext.getInterval(), partitionTypes, countsByPartition, prevReduce.getIdentifiersByType());
+                writer.writePerLocusDepthSummary(referenceContext.getInterval(), countsByPartition, globalIdentifierMap, includeDeletions);
+            }
+
+            // Update the traversing partitioners with this locus data:
+            coverageTotalsForEntireTraversal.update(countsByPartition);
+
+            for (Locatable loc : activeCoveragePartitioners.keySet()) {
+                // For genes, we don't want to update the interval for non-exon bases
+                if (loc.contains(alignmentContext)) {
+                    activeCoveragePartitioners.get(loc).update(countsByPartition);
+                }
             }
 
 
-            //TODO make sure this is correct, here is where the genome list must be handled
-
-
             //TODO figure out what I want to do about this... it appears the old behavior
-//            for ( Pair<SimpleInterval, DepthOfCoveragePartitioner> targetStats : statsByTarget ) {
+//            for ( Pair<SimpleInterval, DepthOfCoveragePartitionedDataStore> targetStats : statsByTarget ) {
 //                List<String> genes = getGeneNames(targetStats.first,refseqIterator);
 //                for (String gene : genes) {
 //                    if ( geneNamesToStats.keySet().contains(gene) ) {
@@ -269,42 +300,92 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
     }
 
 
-    private Map<Locatable, DepthOfCoveragePartitioner> activeCoveragePartitioners = new HashMap<>();
+    private Map<Locatable, DepthOfCoveragePartitionedDataStore> activeCoveragePartitioners = new HashMap<>();
+    private Map<DoCOutputType.Partition, int[][]> statisticsAggrigationByPartitioning = new HashMap<>();
 
     public void onIntervalStart(Locatable activeInterval) {
-        if (activeInterval instanceof RefSeqFeature) {
-            getIntervalPartitioner();
-        }
+        DepthOfCoveragePartitionedDataStore partitioner = createCoveragePartitioner();
+        //NOTE: we don't populate statisticsAggrigationByPartitioning here because that gets populated on the fly later
+        activeCoveragePartitioners.put(activeInterval, partitioner);
     }
 
     // TODO this should have logic for handling if the gene didn't get completely covered
-    public void onIntervalEnd(Locatable activeInterval) {
-        if (activeInterval instanceof SimpleInterval) {
-            DepthOfCoveragePartitioner partitionerToRemove = activeCoveragePartitioners.remove(activeInterval);
-            writer.writeIntervalStats();
 
+    /**
+     * When this method is called, we expect at some point in the past onIntervalStart() was called on the same Locatable
+     * object and that we have been continuously tracking and adding per-base information for each base in the pileup
+     * that overlaps those objects. Given the interval being closed out, we perform one of the following tasks:
+     *
+     *  - Write out per-interval summary information to each of the partition interval summary files and update the target
+     *    summary table corresponding to each track.
+     *
+     *  - If it corresponded to a gene interval, write out to the gene summary tables the line corresponding the coverage
+     *    over targets contained within the genes exome.
+     *
+     * @param activeInterval
+     */
+    public void onIntervalEnd(Locatable activeInterval) {
+        final DepthOfCoveragePartitionedDataStore partitionerToRemove = activeCoveragePartitioners.remove(activeInterval);
+        if (activeInterval instanceof SimpleInterval) {
+            // For each partition type we are managing, make sure we update the active statistics table
+            for (DoCOutputType.Partition p : partitionTypes) {
+                // Write the per-interval depth information as necessary
+                final DepthOfCoverageStats coverageByAggregationPartitionType = partitionerToRemove.getCoverageByAggregationType(p);
+                writer.writePerIntervalDepthInformation(p, (SimpleInterval) activeInterval, coverageByAggregationPartitionType);
+
+                // Create a new table if necessary
+                if (!statisticsAggrigationByPartitioning.containsKey(p)) {
+                    statisticsAggrigationByPartitioning.put(p, new int[coverageByAggregationPartitionType.getHistograms().size()][coverageByAggregationPartitionType.getEndpoints().length + 1]);
+                }
+                // TODO this MUST be switched to a per-locus addition
+                CoverageUtils.updateTargetTable(statisticsAggrigationByPartitioning.get(p), coverageByAggregationPartitionType);
+            }
 
 
         } else if (activeInterval instanceof RefSeqFeature) {
+            DepthOfCoverageStats coverageBySample = partitionerToRemove.getCoverageByAggregationType(DoCOutputType.Partition.sample);
 
+            if ( ! omitPartiallyCoveredGenes || ((RefSeqFeature)activeInterval).getTotalExonLength() >= coverageBySample.getNumberOfLociCovered()) {
+                writer.writePerGeneDepthInformation((RefSeqFeature) activeInterval, coverageBySample);
+            }
+        } else {
+            throw new GATKException("Unrecognized Locatable object supplied for traversal, only RefSeqFeature and SimpleInterval are supported: "+activeInterval.toString());
         }
     }
 
+    /**
+     * When we finish traversal we should have the following held in state:
+     *  1. {@link #statisticsAggrigationByPartitioning} that contains a map from partition to a doubly indexed integer array
+     *     that corresponds to a count of the number of data sources with at least the given depth. Importantly this is
+     *     expected to have had CoverageUtils.updateTargetTable() called on it once per interval (i.e. once per locus).
+     *
+     *  2. {@link #coverageTotalsForEntireTraversal} Which we expect to have had update() called on it exactly once for
+     *     every locus traversed by the locus walker. Consequently we expect partitioner to contain partitioned counts
+     *     corresponding to the entire window covered by the tool.
+     *
+     */
     @Override
     public Object onTraversalSuccess() {
+        // Write out accumulated interval summary statistics
+        for (DoCOutputType.Partition partition : statisticsAggrigationByPartitioning.keySet()) {
+            writer.writeOutputIntervalStatistics(partition, statisticsAggrigationByPartitioning.get(partition), DepthOfCoverageStats.calculateBinEndpoints(start,stop,nBins));
+        }
+
         if (!omitSampleSummary) {
             logger.info("Outputting summary info");
             for (DoCOutputType.Partition type : partitionTypes) {
-                writer.outputSummaryFiles(coverageProfiles, type);
+                writer.writeCumulativeOutputSummaryFiles(coverageTotalsForEntireTraversal, type);
             }
         }
 
         if (!omitLocusTable) {
             logger.info("Outputting locus summary");
             for (DoCOutputType.Partition type : partitionTypes) {
-                writer.outputLocusFiles(coverageProfiles, type);
+                writer.writePerTraversalLocusFiles(coverageTotalsForEntireTraversal, type);
             }
         }
+
+        writer.close();
         return null;
     }
 
@@ -312,8 +393,8 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
 
 
 
-    private DepthOfCoveragePartitioner createCoveragePartitioner() {
-        DepthOfCoveragePartitioner aggro = new DepthOfCoveragePartitioner(partitionTypes, start, stop, nBins);
+    private DepthOfCoveragePartitionedDataStore createCoveragePartitioner() {
+        DepthOfCoveragePartitionedDataStore aggro = new DepthOfCoveragePartitionedDataStore(partitionTypes, start, stop, nBins);
         for (DoCOutputType.Partition t : partitionTypes) {
             aggro.addIdentifiers(t, getSamplesByPartitionFromReadHeader(t));
         }
@@ -321,21 +402,6 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
         checkOrder(aggro);
         return aggro;
     }
-
-
-
-
-    private void outputLocusFiles(DepthOfCoveragePartitioner coverageProfiles, DoCOutputType.Partition type) {
-        printPerLocus(getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.coverage_counts),
-                getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.coverage_proportions),
-                coverageProfiles.getCoverageByAggregationType(type), type);
-    }
-
-    private void outputSummaryFiles(DepthOfCoveragePartitioner coverageProfiles, DoCOutputType.Partition type) {
-        printPerSample(getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.statistics), coverageProfiles.getCoverageByAggregationType(type));
-        printSummary(getCorrectStream(type, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.summary), coverageProfiles.getCoverageByAggregationType(type));
-    }
-
 
     private LinkedHashSet<String> getSamplesByPartitionFromReadHeader(Collection<DoCOutputType.Partition> types) {
         LinkedHashSet<String> partitions = new LinkedHashSet<String>(); // since the DOCS object uses a HashMap, this will be in the same order
@@ -345,10 +411,20 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
         return partitions;
     }
 
+    /**
+     * TODO ensure comments
+     * This makes a global sample map by identifier. That is, per every partition type the lists are lexographically
+     * sorted internally.
+     *
+     * @param types Partition types to generate samples for
+     * @return A map of {@link DoCOutputType.Partition} to list of sorted samples
+     */
     private Map<DoCOutputType.Partition, List<String>> makeGlobalIdentifierMap(Collection<DoCOutputType.Partition> types) {
         Map<DoCOutputType.Partition, List<String>> partitions = new HashMap<>(); // since the DOCS object uses a HashMap, this will be in the same order
         for (DoCOutputType.Partition t : types) {
-            partitions.addAll(getSamplesByPartitionFromReadHeader(t));
+            List<String> samplesForType = new ArrayList<>(getSamplesByPartitionFromReadHeader(t));
+            samplesForType.sort(String::compareTo);
+            partitions.put(t, Collections.unmodifiableList(samplesForType));
         }
         return partitions;
     }
@@ -377,8 +453,8 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
         List<? extends Locatable> userProvidedIntervals = intervalArgumentCollection.getSpecifiedIntervalsWithoutMerging(getBestAvailableSequenceDictionary());
 
         final List<Locatable> refSeqInputs = new ArrayList<>(userProvidedIntervals);
-        for (Path input : refSeqGeneListFiles) {
-            FeatureDataSource<RefSeqFeature> refSeqReader = new FeatureDataSource<>(input.toString());
+        for (String input : refSeqGeneListFiles) {
+            FeatureDataSource<RefSeqFeature> refSeqReader = new FeatureDataSource<>(input);
             for (final RefSeqFeature vcfRecord : refSeqReader) {
                 refSeqInputs.add(vcfRecord);
             }
@@ -391,7 +467,7 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
     //TODO do we really need to do this going forwards?
     //TODO I well understand this is a very crude way of keeping track of this information.... Ideally this should live
     //TODO as a global immutible list that gets passed arround everywhere necessary....
-    private void checkOrder(DepthOfCoveragePartitioner ag) {
+    private void checkOrder(DepthOfCoveragePartitionedDataStore ag) {
         // make sure the ordering stored at initialize() is propagated along reduce
         for (DoCOutputType.Partition t : partitionTypes ) {
             List<String> order = orderCheck.get(t);
@@ -416,12 +492,12 @@ public class DepthOfCoverage extends LocusWalkerByInterval {
  *
  * This class is responsible for holding a running
  */
-class DepthOfCoveragePartitioner {
+class DepthOfCoveragePartitionedDataStore {
     private Collection<DoCOutputType.Partition> types;
     private Map<DoCOutputType.Partition,DepthOfCoverageStats> coverageProfiles;
-    private Map<DoCOutputType.Partition,List<String>> identifiersByType;
-    private Set<String> allIdentifiers;
-    public DepthOfCoveragePartitioner(Collection<DoCOutputType.Partition> typesToUse, int start, int stop, int nBins) {
+    private Map<DoCOutputType.Partition,List<String>> identifiersByType; //TODO do away with this
+    private Set<String> allIdentifiers; //TODO do away with this
+    public DepthOfCoveragePartitionedDataStore(Collection<DoCOutputType.Partition> typesToUse, int start, int stop, int nBins) {
         coverageProfiles = new TreeMap<>();
         identifiersByType = new HashMap<>();
         types = typesToUse;
@@ -432,7 +508,7 @@ class DepthOfCoveragePartitioner {
         allIdentifiers = new HashSet<String>();
     }
 
-    public void merge(DepthOfCoveragePartitioner otherAggregator) {
+    public void merge(DepthOfCoveragePartitionedDataStore otherAggregator) {
         for ( DoCOutputType.Partition type : types ) {
             this.coverageProfiles.get(type).merge(otherAggregator.coverageProfiles.get(type));
         }

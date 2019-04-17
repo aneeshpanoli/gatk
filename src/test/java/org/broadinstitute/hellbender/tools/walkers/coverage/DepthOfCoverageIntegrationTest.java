@@ -2,54 +2,67 @@ package org.broadinstitute.hellbender.tools.walkers.coverage;
 
 import org.broadinstitute.hellbender.CommandLineProgramTest;
 import org.broadinstitute.hellbender.testutils.IntegrationTestSpec;
+import org.broadinstitute.hellbender.utils.io.IOUtils;
+import org.testng.Assert;
 import org.testng.annotations.Test;
+import sun.nio.ch.IOUtil;
 
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.io.IOException;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import static org.testng.Assert.*;
 
 public class DepthOfCoverageIntegrationTest extends CommandLineProgramTest {
-    private boolean RUN_TESTS = true;
-    private String root = "-T DepthOfCoverage ";
 
-    private String buildRootCmd(String ref, List<String> bams, List<String> intervals) {
-        StringBuilder bamBuilder = new StringBuilder();
-        do {
-            bamBuilder.append(" -I ");
-            bamBuilder.append(bams.remove(0));
-        } while ( bams.size() > 0 );
+    private String getDoCExtensionFromFile(File docOutputFile, String basename) {
+        String[] split = docOutputFile.getAbsolutePath().split(basename);
+        if (split.length == 2) {
+            return split[1];
+        } else if (split.length == 1) {
+            return "";
+        }
+        Assert.fail("There was a problem loading DoCExtension: "+basename);
+        return null;
+    }
 
-        StringBuilder intervalBuilder = new StringBuilder();
-        do {
-            intervalBuilder.append(" -L ");
-            intervalBuilder.append(intervals.remove(0));
-        } while ( intervals.size() > 0 );
+    private File getExpectedDataDir() {
+        return getTestFile( "expected/");
+    }
 
+    @Test
+    public void testBaseOutputNoFiltering() throws IOException {
+        final String expectedBaseName = "depthofcoveragenofiltering";
+        final File baseOutputFile = createTempDir("testVCFModeIsConsistentWithPastResults");
+        final File output = IOUtils.createTempFileInDirectory( "depthofcoveragenofiltering", ".csv", baseOutputFile);
 
-        return root + "-R "+ref+bamBuilder.toString()+intervalBuilder.toString();
+        String cmd = "-R /Users/emeryj/hellbender/gatk3TestData/Homo_sapiens_assembly18.fasta " +
+                "-I /Users/emeryj/hellbender/gatk3TestData/FHS_indexed_subset.bam " +
+                "-L /Users/emeryj/hellbender/gatk3TestData/fhs_jhs_30_targts.interval_list " +
+                "-mmq 0 -mbq 0 -dels -baseCounts -pt readgroup -pt sample -pt library --output-format CSV -ct 10 -ct 15 -ct 20 -ct 25";
+        cmd += " -O "+output.getAbsolutePath();
+        runCommandLine(cmd.split(" "));
+
+        File[] actualFiles = baseOutputFile.listFiles();
+
+        compareOutputDirectories(expectedBaseName, output.getName(), actualFiles);
     }
 
 
-    @Test
-    public void testBaseOutputNoFiltering() {
-        final String[] intervals = {"/humgen/gsa-hpprojects/GATK/data/Validation_Data/fhs_jhs_30_targts.interval_list"};
-        final String[] bams = {"/humgen/gsa-hpprojects/GATK/data/Validation_Data/FHS_indexed_subset.bam"};
-        final File output = createTempFile("testVCFModeIsConsistentWithPastResults", ".vcf");
-        final String expectedDir = "/Users/emeryj/hellbender/gatk3TestData/expectedOutputsTest1";
+    private void compareOutputDirectories(final String expectedBaseName, final String actualFileBaseName, final File[] actual) throws IOException {
+        List<File> expectedFiles = Arrays.stream(Objects.requireNonNull(getExpectedDataDir().listFiles())).filter(f -> f.getName().contains(expectedBaseName)).sorted().collect(Collectors.toList());
+        List<File> actualFiles = Arrays.stream(actual).sorted().collect(Collectors.toList());
 
-        String cmd = "-R /Users/emeryj/hellbender/gatk3TestData/Homo_sapiens_assembly18.fasta -I /Users/emeryj/hellbender/gatk3TestData/FHS_indexed_subset.bam -L /Users/emeryj/hellbender/gatk3TestData/fhs_jhs_30_targts.interval_list -mmq 0 -mbq 0 -dels -baseCounts -pt readgroup -pt sample -pt library --outputFormat csv -ct 10 -ct 15 -ct 20 -ct 25";
-        cmd += " -O "+output.getAbsolutePath();
-        final IntegrationTestSpec spec = new IntegrationTestSpec(cmd,0, null);
+        // First check that all the expected files correspond to actual files
+        List<String> expectedFilenames = expectedFiles.stream().map(f -> getDoCExtensionFromFile(f, expectedBaseName)).sorted().collect(Collectors.toList());
+        List<String> actualFilenames = actualFiles.stream().map(f -> getDoCExtensionFromFile(f, actualFileBaseName)).sorted().collect(Collectors.toList());
+        Assert.assertEquals(actualFilenames, expectedFilenames);
 
-        // our base file
-        final File baseOutputFile = createTempFile("depthofcoveragenofiltering",".tmp");
-
-        runCommandLine(cmd.split(" "));
-
-        // TODO add tests for the output files?
+        // Now assert that the outputs exactly match with the expected outputs
+        for (int i = 0; i < actual.length; i++) {
+            IntegrationTestSpec.assertEqualTextFiles(actualFiles.get(i), expectedFiles.get(i));
+        }
     }
 
 }

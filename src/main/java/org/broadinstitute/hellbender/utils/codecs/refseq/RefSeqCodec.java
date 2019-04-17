@@ -14,7 +14,7 @@ import java.util.ArrayList;
 
 /**
  * Allows for reading in RefSeq information
- *
+ * TODO this header needs to be rewritten
  * <p>
  * Parses a sorted UCSC RefSeq file (see below) into relevant features: the gene name, the unique gene name (if multiple transcrips get separate entries), exons, gene start/stop, coding start/stop,
  * strandedness of transcription. 
@@ -50,6 +50,8 @@ public class RefSeqCodec extends AsciiFeatureCodec<RefSeqFeature>{
 
     // codec file extension
     protected static final String FILE_EXT = "refseq";
+    public static final String HEADER_LINE_CHAR = "#";
+    public static final String LINE_DELIMETER = "\t";
     /**
      * The parser to use when resolving genome-wide locations.
      */
@@ -62,10 +64,10 @@ public class RefSeqCodec extends AsciiFeatureCodec<RefSeqFeature>{
     @Override
     public Feature decodeLoc(final LineIterator lineIterator) {
         final String line = lineIterator.next();
-        if (line.startsWith("#")){
+        if (line.startsWith(HEADER_LINE_CHAR)){
             return null;
         }
-        String fields[] = line.split("\t");
+        String fields[] = line.split(LINE_DELIMETER);
         if (fields.length < 3){
             throw new TribbleException("RefSeq (decodeLoc) : Unable to parse line -> " + line + ", we expected at least 3 columns, we saw " + fields.length);
         }
@@ -81,10 +83,10 @@ public class RefSeqCodec extends AsciiFeatureCodec<RefSeqFeature>{
     /** Fills this object from a text line in RefSeq (UCSC) text dump file */
     @Override
     public RefSeqFeature decode(String line) {
-        if (line.startsWith("#")) {
+        if (line.startsWith(HEADER_LINE_CHAR)) {
             return null;
         }
-        String fields[] = line.split("\t");
+        String fields[] = line.split(LINE_DELIMETER);
 
         // we reference postion 15 in the split array below, make sure we have at least that many columns
         if (fields.length < 16) {

@@ -1,17 +1,15 @@
 package org.broadinstitute.hellbender.tools.walkers.coverage;
 
-import htsjdk.samtools.util.Locatable;
-import htsjdk.samtools.util.Tuple;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.exceptions.UserException;
 import org.broadinstitute.hellbender.utils.BaseUtils;
 import org.broadinstitute.hellbender.utils.MathUtils;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
+import org.broadinstitute.hellbender.utils.codecs.refseq.RefSeqFeature;
 import org.broadinstitute.hellbender.utils.io.IOUtils;
 
 import java.io.*;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.text.DecimalFormat;
 import java.util.*;
 
@@ -29,29 +27,34 @@ import java.util.*;
  *                                   {@link CoverageUtils#getBaseCountsByPartition}
  *
  *  2a. writePerIntervalDepthInformation() - This should be called once per traversal interval once it is finished and takes
- *                                        as input a {@link DepthOfCoveragePartitioner} object corresponding to the coverage
+ *                                        as input a {@link org.broadinstitute.hellbender.tools.walkers.coverage.DepthOfCoverage.DepthOfCoveragePartitionedDataStore} object corresponding to the coverage
  *                                        information over the whole interval. This is used to write both "_interval_summary"
  *                                        and "_interval_statistics" files for each partition.
  *
  *  2b. writePerGeneDepthInformation() - Similarly to 2a, this should be called once per gene in the interval traversal and
  *                                       it takes the same gen-interval coverage summary as 2a. TODO Note that this may not always cover the gene at hand because of reasons
  *
- *  3. writeTraversalCumulativeCoverage() - This method takes a {@link DepthOfCoveragePartitioner} object that should correspond
+ *  3. writeTraversalCumulativeCoverage() - This method takes a {@link org.broadinstitute.hellbender.tools.walkers.coverage.DepthOfCoverage.DepthOfCoveragePartitionedDataStore} object that should correspond
  *                                         to the partitioned counts for every base traversed by DepthOfCoverage aggregated.
  *                                         This method is responsible for outputting the "_cumulative_coverage_counts",
  *                                         "_cumulative_coverage_proportions", "_statistics", and "_summary" file writing.
  *
  */
+//TODO this will need to be converted into a class holding csvwriteres
 public class CoverageOutputWriter implements Closeable {
 
-    private final Set<DoCOutputType.Partition> partitions;
-    private final Path refSeqGeneList;
+    private final EnumSet<DoCOutputType.Partition> partitions;
+    private final boolean includeGeneOutput;
+    private final boolean omitIntervals;
     private final String separator;
     private boolean printBaseCounts;
     private Map<DoCOutputType,PrintStream> outputs;
     private DEPTH_OF_COVERAGE_OUTPUT_FORMAT outputFormat;
     private boolean omitDepthOutput;
-    private int[] coverageThresholds;
+    private List<Integer> coverageThresholds;
+
+    //TODO this corresponds to truncating to 2 decimal places, this is legacy string format behavior from the previous incarnation of DoC, this should probably round instead...
+    final static DecimalFormat DOUBLE_FORMAT = new DecimalFormat(".00");
 
     public enum DEPTH_OF_COVERAGE_OUTPUT_FORMAT {
         TABLE,
@@ -60,9 +63,9 @@ public class CoverageOutputWriter implements Closeable {
     }
 
     public CoverageOutputWriter(final DEPTH_OF_COVERAGE_OUTPUT_FORMAT outputFormat,
-                                final Set<DoCOutputType.Partition> partitions,
-                                final Path refSeqGeneList, //TODO this is a placeholder until we figure out what the hell to do in order to parse these inputs
+                                final EnumSet<DoCOutputType.Partition> partitions,
                                 final String outputBaseName,
+                                final boolean includeGeneOutput,
                                 final boolean printBaseCounts,
                                 final boolean omitDepthOutput,
                                 final boolean omitIntervals,
@@ -70,7 +73,8 @@ public class CoverageOutputWriter implements Closeable {
                                 final boolean omitLocusTable)  throws IOException{
         this.outputFormat = outputFormat;
         this.partitions = partitions;
-        this.refSeqGeneList = refSeqGeneList;
+        this.includeGeneOutput = includeGeneOutput;
+        this.omitIntervals = omitIntervals;
         this.printBaseCounts = printBaseCounts;
         this.omitDepthOutput = omitDepthOutput;
 
@@ -100,7 +104,7 @@ public class CoverageOutputWriter implements Closeable {
             }
         }
 
-        if(refSeqGeneList != null && partitions.contains(DoCOutputType.Partition.sample)) {
+        if(includeGeneOutput && partitions.contains(DoCOutputType.Partition.sample)) {
             DoCOutputType geneSummaryOut = new DoCOutputType(DoCOutputType.Partition.sample, DoCOutputType.Aggregation.gene, DoCOutputType.FileType.summary);
             outputs.put(geneSummaryOut, getOutputStream(outputBaseName, geneSummaryOut));
         }
@@ -129,12 +133,12 @@ public class CoverageOutputWriter implements Closeable {
     }
 
     // Helper method to generate an output stream given a DoCOutputType Object and the base name
-    protected static PrintStream getOutputStream(String outputBaseName, DoCOutputType depthSummaryByLocus) throws IOException {
+    private static PrintStream getOutputStream(String outputBaseName, DoCOutputType depthSummaryByLocus) throws IOException {
         return new PrintStream(new BufferedOutputStream(Files.newOutputStream(IOUtils.getPath(depthSummaryByLocus.getFilePath(outputBaseName)))));
     }
 
     //TODO wildly clean every part of this up incredibly
-    public void writeCoverageOutputHeaders(final LinkedHashSet<String> allSamples, final int[] coverageThresholds) {
+    public void writeCoverageOutputHeaders(final Map<DoCOutputType.Partition, List<String>> allSamplesPartitionedByStart, final LinkedHashSet<String> allSamples, final List<Integer> coverageThresholds) {
         this.coverageThresholds = coverageThresholds;
 
         if ( ! omitDepthOutput ) { // print header
@@ -142,14 +146,21 @@ public class CoverageOutputWriter implements Closeable {
         }
 
         // write
-        if ( refSeqGeneList != null && partitions.contains(DoCOutputType.Partition.sample) ) {
+        if ( includeGeneOutput && partitions.contains(DoCOutputType.Partition.sample) ) {
             PrintStream geneSummaryOut = getCorrectStream(DoCOutputType.Partition.sample, DoCOutputType.Aggregation.gene, DoCOutputType.FileType.summary);
-            printLocusSummaryHeader("Gene", geneSummaryOut, allSamples);
+            printLocusSummaryHeader("Gene", geneSummaryOut, allSamplesPartitionedByStart.get(DoCOutputType.Partition.sample));
         }
 
+        //TODO this is a horrible mess, allsamples is wrong here...
+        if(!omitIntervals) {
+            for (DoCOutputType.Partition partition : partitions) {
+                PrintStream intervalSummaryOut = getCorrectStream(partition, DoCOutputType.Aggregation.interval, DoCOutputType.FileType.summary);
+                printLocusSummaryHeader("Target", intervalSummaryOut, allSamplesPartitionedByStart.get(partition));
+            }
+        }
     }
 
-    protected void writeDepthOutputSummaryHeader(LinkedHashSet<String> allSamples) {
+    private void writeDepthOutputSummaryHeader(LinkedHashSet<String> allSamples) {
         PrintStream out = getCorrectStream(null, DoCOutputType.Aggregation.locus, DoCOutputType.FileType.summary);
         out.printf("%s\t%s","Locus","Total_Depth");
         for (DoCOutputType.Partition type : partitions ) {
@@ -169,7 +180,6 @@ public class CoverageOutputWriter implements Closeable {
         out.printf("%n");
     }
 
-
     private PrintStream getCorrectStream(DoCOutputType.Partition partition, DoCOutputType.Aggregation aggregation, DoCOutputType.FileType fileType) {
         DoCOutputType outputType = new DoCOutputType(partition,aggregation,fileType);
         if(!outputs.containsKey(outputType)) {
@@ -183,9 +193,7 @@ public class CoverageOutputWriter implements Closeable {
     // Outward facing writer methods
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    final static DecimalFormat doubleFormat = new DecimalFormat("#.2#");
-
-    public void writePerLocusDepthSummary(SimpleInterval locus, Map<DoCOutputType.Partition, Map<String,int[]>> countsBySampleByType, Map<DoCOutputType.Partition,List<String>> identifiersByType) {
+    public void writePerLocusDepthSummary(SimpleInterval locus, Map<DoCOutputType.Partition, Map<String,int[]>> countsBySampleByType, Map<DoCOutputType.Partition,List<String>> identifiersByType, boolean includeDeletions) {
         PrintStream stream = getCorrectStream(null, DoCOutputType.Aggregation.locus, DoCOutputType.FileType.summary);
         // get the depths per sample and build up the output string while tabulating total and average coverage
         StringBuilder perSampleOutput = new StringBuilder();
@@ -199,7 +207,7 @@ public class CoverageOutputWriter implements Closeable {
                 perSampleOutput.append(dp);
                 if ( printBaseCounts ) {
                     perSampleOutput.append(separator);
-                    perSampleOutput.append(baseCounts(countsByID != null ? countsByID.get(s) : null ));
+                    perSampleOutput.append(getBaseCountsString(countsByID != null ? countsByID.get(s) : null , includeDeletions));
                 }
                 if ( ! depthCounted ) {
                     tDepth += dp;
@@ -209,50 +217,90 @@ public class CoverageOutputWriter implements Closeable {
         }
 
         // remember -- genome locus was printed in map()
-        stream.print(locus);
+        stream.print(locus.getContig()+":"+locus.getStart());
         stream.print(separator+tDepth);
-        for (DoCOutputType.Partition type : partitions ) {
-            stream.print(separator + doubleFormat.format((double) tDepth / identifiersByType.get(type).size() ) );
+        for (DoCOutputType.Partition type : partitions ) { //Note that this is a deterministic traversal since the underlying set is an EnumSet
+            stream.print(separator + DOUBLE_FORMAT.format((double) tDepth / identifiersByType.get(type).size() ) );
         }
         stream.printf("%s%n",perSampleOutput);
     }
 
 
-    public void writePerIntervalDepthInformation(SimpleInterval locus, DepthOfCoverageStats intervalStats) {
-
+    public void writePerIntervalDepthInformation(final DoCOutputType.Partition partition, final SimpleInterval locus, final DepthOfCoverageStats intervalStats) {
+        PrintStream output = getCorrectStream(partition, DoCOutputType.Aggregation.interval, DoCOutputType.FileType.summary);
+        printTargetSummary(output, locus.toString(), intervalStats);
     }
-    public void writePerGeneDepthInformation(Locatable, DepthOfCoverageStats intervalStats) {
-
+    public void writePerGeneDepthInformation(final RefSeqFeature gene, final DepthOfCoverageStats intervalStats) {
+        PrintStream output = getCorrectStream(DoCOutputType.Partition.sample, DoCOutputType.Aggregation.gene, DoCOutputType.FileType.summary);
+        printTargetSummary(output, gene.getGeneName(), intervalStats);
     }
-    public void writeTraversalCumulativeCoverage(DepthOfCoverageStats) {}
+    public void writePerTraversalLocusFiles(final DepthOfCoveragePartitionedDataStore coverageProfilesForEntireTraversal, final DoCOutputType.Partition partition) {
+        outputPerLocusCumulativeSummaryAndStatistics(getCorrectStream(partition, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.coverage_counts),
+                getCorrectStream(partition, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.coverage_proportions),
+                coverageProfilesForEntireTraversal.getCoverageByAggregationType(partition),partition);
+    }
+    public void writeCumulativeOutputSummaryFiles(final DepthOfCoveragePartitionedDataStore coverageProfilesForEntireTraversal, final DoCOutputType.Partition partition) {
+        outputPerSampleCumulativeStatisticsForPartition(getCorrectStream(partition, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.statistics), coverageProfilesForEntireTraversal.getCoverageByAggregationType(partition));
+        outputCumulativeSummaryForPartition(getCorrectStream(partition, DoCOutputType.Aggregation.cumulative, DoCOutputType.FileType.summary), coverageProfilesForEntireTraversal.getCoverageByAggregationType(partition));
+    }
+    public void writeOutputIntervalStatistics(final DoCOutputType.Partition partition, final int[][] nTargetsByAvgCvgBySample, final int[] binEndpoints) {
+        PrintStream output = getCorrectStream(partition, DoCOutputType.Aggregation.interval, DoCOutputType.FileType.statistics);
+        printIntervalTable(output, nTargetsByAvgCvgBySample, binEndpoints);
+    }
 
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Outward facing writer methods
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    private DepthOfCoverageStats printIntervalStats(List<Tuple<Locatable, DepthOfCoveragePartitioner>> statsByInterval, PrintStream summaryOut, PrintStream statsOut, DoCOutputType.Partition type) {
-        Tuple<Locatable, DepthOfCoveragePartitioner> firstPair = statsByInterval.get(0);
-        DepthOfCoveragePartitioner firstAggregator = firstPair.b;
-        DepthOfCoverageStats firstStats = firstAggregator.getCoverageByAggregationType(type);
+    //TODO splitme out into two method calls reusing code for readability sake
+    private void outputPerLocusCumulativeSummaryAndStatistics(PrintStream output, PrintStream coverageOut, DepthOfCoverageStats stats, DoCOutputType.Partition partitionType) {
+        int[] endpoints = stats.getEndpoints();
+        int samples = stats.getHistograms().size();
 
-        printLocusSummaryHeader(summaryOut, firstStats);
+        long[][] baseCoverageCumDist = stats.getLocusCounts();
 
-        int[][] nTargetsByAvgCvgBySample = new int[firstStats.getHistograms().size()][firstStats.getEndpoints().length+1];
+        // rows - # of samples
+        // columns - depth of coverage
 
-        for ( Tuple<Locatable, DepthOfCoveragePartitioner> targetAggregator : statsByInterval ) {
+        boolean printSampleColumnHeader = outputFormat == DEPTH_OF_COVERAGE_OUTPUT_FORMAT.CSV || outputFormat == DEPTH_OF_COVERAGE_OUTPUT_FORMAT.TABLE;
 
-            Tuple<Locatable,DepthOfCoverageStats> targetStats = new Tuple<Locatable,DepthOfCoverageStats>(
-                    targetAggregator.a, targetAggregator.b.getCoverageByAggregationType(type));
-            printTargetSummary(summaryOut,targetStats);
-            updateTargetTable(nTargetsByAvgCvgBySample,targetStats.b);
+        StringBuilder header = new StringBuilder();
+        if ( printSampleColumnHeader ) {
+            // mhanna 22 Aug 2010 - Deliberately force this header replacement to make sure integration tests pass.
+            // TODO: Update integration tests and get rid of this.
+            header.append(partitionType == DoCOutputType.Partition.readgroup ? "read_group" : partitionType.toString());
+        }
+        header.append(String.format("%sgte_0",separator));
+        for ( int d : endpoints ) {
+            header.append(String.format("%sgte_%d",separator,d));
+        }
+        header.append(String.format("%n"));
+
+        output.print(header);
+        coverageOut.print(header);
+
+        for ( int row = 0; row < samples; row ++ ) {
+            output.printf("%s_%d","NSamples",row+1);
+            for ( int depthBin = 0; depthBin < baseCoverageCumDist[0].length; depthBin ++ ) {
+                output.printf("%s%d",separator,baseCoverageCumDist[row][depthBin]);
+            }
+            output.printf("%n");
         }
 
-        printIntervalTable(statsOut,nTargetsByAvgCvgBySample,firstStats.getEndpoints());
-
-        return firstStats;
+        for ( String sample : stats.getAllSamples() ) {
+            coverageOut.printf("%s",sample);
+            double[] coverageDistribution = stats.getCoverageProportions(sample);
+            for ( int bin = 0; bin < coverageDistribution.length; bin ++ ) {
+                coverageOut.printf("%s%.2f",separator,coverageDistribution[bin]);
+            }
+            coverageOut.printf("%n");
+        }
     }
 
-    private void printLocusSummaryHeader(final String title, final PrintStream summaryOut, final List<String> allSamples) {
+
+
+
+    private void printLocusSummaryHeader(final String title, final PrintStream summaryOut, final Collection<String> allSamples) {
         StringBuilder summaryHeader = new StringBuilder();
         summaryHeader.append(title);
         summaryHeader.append(separator);
@@ -261,7 +309,7 @@ public class CoverageOutputWriter implements Closeable {
         summaryHeader.append("average_coverage");
 
         //TODO this was probably where the order in the header went wrong compared to gatk3
-        for ( String s : allSamples ) {
+        for (String s : allSamples) {
             summaryHeader.append(separator);
             summaryHeader.append(s);
             summaryHeader.append("_total_cvg");
@@ -278,7 +326,7 @@ public class CoverageOutputWriter implements Closeable {
             summaryHeader.append(s);
             summaryHeader.append("_granular_Q3");
             // TODO right here we should really add some space for the new site score variable
-            for ( int thresh : coverageThresholds ) {
+            for (int thresh : coverageThresholds) {
                 summaryHeader.append(separator);
                 summaryHeader.append(s);
                 summaryHeader.append("_%_above_");
@@ -286,68 +334,14 @@ public class CoverageOutputWriter implements Closeable {
             }
         }
 
-        summaryOut.printf("%s%n",summaryHeader);
+        summaryOut.printf("%s%n", summaryHeader);
     }
 
-    private void printGeneStats(List<Tuple<String,DepthOfCoverageStats>> statsByGene) {
-        logger.debug("statsByTarget size is "+Integer.toString(statsByTarget.size()));
-        logger.debug("Initializing refseq...");
-        LocationAwareSeekableRODIterator refseqIterator = initializeRefSeq(); //TODO big time this must be a feature context
-        logger.debug("Refseq init done.");
-        List<Pair<String,DepthOfCoverageStats>> statsByGene = new ArrayList<Pair<String,DepthOfCoverageStats>>();// maintains order
-        Map<String,DepthOfCoverageStats> geneNamesToStats = new HashMap<String,DepthOfCoverageStats>(); // allows indirect updating of objects in list
-
-
-        //TODO THIS is the merging code that needs to change, this whole approach looks inadequate, this will probably have to ha[pen over time
-
-        PrintStream geneSummaryOut = getCorrectStream(DoCOutputType.Partition.sample, DoCOutputType.Aggregation.gene, DoCOutputType.FileType.summary);
-        StringBuilder summaryHeader = new StringBuilder();
-        summaryHeader.append("Gene");
-        summaryHeader.append(separator);
-        summaryHeader.append("total_coverage");
-        summaryHeader.append(separator);
-        summaryHeader.append("average_coverage");
-
-        if ( !statsByGene.isEmpty() ) {
-            // Only need to get the first item in statsByGene since all have the same samples
-            for (String s : statsByGene.get(0).second.getAllSamples()) {
-                summaryHeader.append(separator);
-                summaryHeader.append(s);
-                summaryHeader.append("_total_cvg");
-                summaryHeader.append(separator);
-                summaryHeader.append(s);
-                summaryHeader.append("_mean_cvg");
-                summaryHeader.append(separator);
-                summaryHeader.append(s);
-                summaryHeader.append("_granular_Q1");
-                summaryHeader.append(separator);
-                summaryHeader.append(s);
-                summaryHeader.append("_granular_median");
-                summaryHeader.append(separator);
-                summaryHeader.append(s);
-                summaryHeader.append("_granular_Q3");
-                for (int thresh : coverageThresholds) {
-                    summaryHeader.append(separator);
-                    summaryHeader.append(s);
-                    summaryHeader.append("_%_above_");
-                    summaryHeader.append(thresh);
-                }
-            }
-        }
-
-        geneSummaryOut.printf("%s%n",summaryHeader);
-
-        for ( Pair<String,DepthOfCoverageStats> geneStats : statsByGene ) {
-            printTargetSummary(geneSummaryOut,geneStats);
-        }
-    }
-
-    private void printTargetSummary(PrintStream output, Pair<?,DepthOfCoverageStats> intervalStats) {
-        DepthOfCoverageStats stats = intervalStats.second;
+    private void printTargetSummary(final PrintStream output, final String locusName, final DepthOfCoverageStats stats) {
         int[] bins = stats.getEndpoints();
 
         StringBuilder targetSummary = new StringBuilder();
-        targetSummary.append(intervalStats.first.toString());
+        targetSummary.append(locusName);
         targetSummary.append(separator);
         targetSummary.append(stats.getTotalCoverage());
         targetSummary.append(separator);
@@ -359,16 +353,16 @@ public class CoverageOutputWriter implements Closeable {
             targetSummary.append(separator);
             targetSummary.append(String.format("%.2f", stats.getMeans().get(s)));
             targetSummary.append(separator);
-            int median = getQuantile(stats.getHistograms().get(s),0.5);
-            int q1 = getQuantile(stats.getHistograms().get(s),0.25);
-            int q3 = getQuantile(stats.getHistograms().get(s),0.75);
-            targetSummary.append(formatBin(bins,q1));
+            int median = CoverageUtils.getQuantile(stats.getHistograms().get(s),0.5);
+            int q1 = CoverageUtils.getQuantile(stats.getHistograms().get(s),0.25);
+            int q3 = CoverageUtils.getQuantile(stats.getHistograms().get(s),0.75);
+            targetSummary.append(formatBin(bins, q1));
             targetSummary.append(separator);
-            targetSummary.append(formatBin(bins,median));
+            targetSummary.append(formatBin(bins, median));
             targetSummary.append(separator);
-            targetSummary.append(formatBin(bins,q3));
+            targetSummary.append(formatBin(bins, q3));
             for ( int thresh : coverageThresholds ) {
-                targetSummary.append(String.format("%s%.1f",separator,getPctBasesAbove(stats.getHistograms().get(s),stats.value2bin(thresh))));
+                targetSummary.append(String.format("%s%.1f", separator, CoverageUtils.getPctBasesAbove(stats.getHistograms().get(s),stats.value2bin(thresh))));
             }
 
         }
@@ -376,59 +370,110 @@ public class CoverageOutputWriter implements Closeable {
         output.printf("%s%n", targetSummary);
     }
 
+    private void outputPerSampleCumulativeStatisticsForPartition(PrintStream output, DepthOfCoverageStats stats) {
+        int[] leftEnds = stats.getEndpoints();
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    /*
-     * @updateTargetTable
-     * The idea is to have counts for how many *targets* have at least K samples with
-     * median coverage of at least X.
-     * To that end:
-     * Iterate over the samples the DOCS object, determine how many there are with
-     * median coverage > leftEnds[0]; how many with median coverage > leftEnds[1]
-     * and so on. Then this target has at least N, N-1, N-2, ... 1, 0 samples covered
-     * to leftEnds[0] and at least M,M-1,M-2,...1,0 samples covered to leftEnds[1]
-     * and so on.
-     */
-    private void updateTargetTable(int[][] table, DepthOfCoverageStats stats) {
-        int[] cutoffs = stats.getEndpoints();
-        int[] countsOfMediansAboveCutoffs = new int[cutoffs.length+1]; // 0 bin to catch everything
-        for ( int i = 0; i < countsOfMediansAboveCutoffs.length; i ++) {
-            countsOfMediansAboveCutoffs[i]=0;
+        StringBuilder hBuilder = new StringBuilder();
+        if ( ! outputFormat.equals("rTable")) {
+            hBuilder.append("Source_of_reads");
         }
+        hBuilder.append(separator);
+        hBuilder.append(String.format("from_0_to_%d)%s",leftEnds[0],separator));
+        for ( int i = 1; i < leftEnds.length; i++ )
+            hBuilder.append(String.format("from_%d_to_%d)%s",leftEnds[i-1],leftEnds[i],separator));
+        hBuilder.append(String.format("from_%d_to_inf%n",leftEnds[leftEnds.length-1]));
+        output.print(hBuilder.toString());
+        Map<String,long[]> histograms = stats.getHistograms();
 
-        for ( String s : stats.getAllSamples() ) {
-            int medianBin = getQuantile(stats.getHistograms().get(s),0.5);
-            for ( int i = 0; i <= medianBin; i ++) {
-                countsOfMediansAboveCutoffs[i]++;
+        for ( Map.Entry<String, long[]> p : histograms.entrySet() ) {
+            StringBuilder sBuilder = new StringBuilder();
+            sBuilder.append(String.format("sample_%s",p.getKey()));
+            for ( long count : p.getValue() ) {
+                sBuilder.append(String.format("%s%d",separator,count));
             }
-        }
-
-        for ( int medianBin = 0; medianBin < countsOfMediansAboveCutoffs.length; medianBin++) {
-            for ( ; countsOfMediansAboveCutoffs[medianBin] > 0; countsOfMediansAboveCutoffs[medianBin]-- ) {
-                table[countsOfMediansAboveCutoffs[medianBin]-1][medianBin]++;
-                // the -1 is due to counts being 1-based and offsets being 0-based
-            }
+            sBuilder.append(String.format("%n"));
+            output.print(sBuilder.toString());
         }
     }
 
-    private int getQuantile(long[] histogram, double prop) {
-        int total = 0;
-
-        for ( int i = 0; i < histogram.length; i ++ ) {
-            total += histogram[i];
+    //TODO this method is abjectly terrible
+    private void outputCumulativeSummaryForPartition(PrintStream output, DepthOfCoverageStats stats) {
+        if ( outputFormat != DEPTH_OF_COVERAGE_OUTPUT_FORMAT.CSV ) {
+            output.printf("%s\t%s\t%s\t%s\t%s\t%s","sample_id","total","mean","granular_third_quartile","granular_median","granular_first_quartile");
+        } else {
+            output.printf("%s,%s,%s,%s,%s,%s","sample_id","total","mean","granular_third_quartile","granular_median","granular_first_quartile");
         }
 
-        int counts = 0;
-        int bin = -1;
-        while ( counts < prop*total ) {
-            counts += histogram[bin+1];
-            bin++;
+        for ( int thresh : coverageThresholds ) {
+            output.printf("%s%s%d",separator,"%_bases_above_",thresh);
         }
 
-        return bin == -1 ? 0 : bin;
+        output.printf("%n");
+
+        Map<String,long[]> histograms = stats.getHistograms();
+        Map<String,Double> means = stats.getMeans();
+        Map<String,Long> totals = stats.getTotals();
+        int[] leftEnds = stats.getEndpoints();
+
+        for ( Map.Entry<String, long[]> p : histograms.entrySet() ) {
+            String s = p.getKey();
+            long[] histogram = p.getValue();
+            int median = CoverageUtils.getQuantile(histogram,0.5);
+            int q1 = CoverageUtils.getQuantile(histogram,0.25);
+            int q3 = CoverageUtils.getQuantile(histogram,0.75);
+            // if any of these are larger than the higest bin, put the median as in the largest bin
+            median =  median == histogram.length-1 ? histogram.length-2 : median;
+            q1 = q1 == histogram.length-1 ? histogram.length-2 : q1;
+            q3 = q3 == histogram.length-1 ? histogram.length-2 : q3;
+            if ( ! outputFormat.equals("csv") ) {
+                output.printf("%s\t%d\t%.2f\t%d\t%d\t%d",s,totals.get(s),means.get(s),leftEnds[q3],leftEnds[median],leftEnds[q1]);
+            } else {
+                output.printf("%s,%d,%.2f,%d,%d,%d",s,totals.get(s),means.get(s),leftEnds[q3],leftEnds[median],leftEnds[q1]);
+            }
+
+            for ( int thresh : coverageThresholds ) {
+                output.printf("%s%.1f", separator, CoverageUtils.getPctBasesAbove(histogram,stats.value2bin(thresh)));
+            }
+
+            output.printf("%n");
+        }
+
+        if ( ! outputFormat.equals("csv") ) {
+            output.printf("%s\t%d\t%.2f\t%s\t%s\t%s%n","Total",stats.getTotalCoverage(),stats.getTotalMeanCoverage(),"N/A","N/A","N/A");
+        } else {
+            output.printf("%s,%d,%.2f,%s,%s,%s%n","Total",stats.getTotalCoverage(),stats.getTotalMeanCoverage(),"N/A","N/A","N/A");
+        }
     }
 
-    private String baseCounts(int[] counts) {
+    private void printIntervalTable(PrintStream output, int[][] intervalTable, int[] cutoffs) {
+        String colHeader = outputFormat.equals("rtable") ? "" : "Number_of_sources";
+        output.printf(colHeader + separator+"depth>=%d",0);
+        for ( int col = 0; col < intervalTable[0].length-1; col ++ ) {
+            output.printf(separator+"depth>=%d",cutoffs[col]);
+        }
+
+        output.printf(String.format("%n"));
+        for ( int row = 0; row < intervalTable.length; row ++ ) {
+            output.printf("At_least_%d_samples",row+1);
+            for ( int col = 0; col < intervalTable[0].length; col++ ) {
+                output.printf(separator+"%d",intervalTable[row][col]);
+            }
+            output.printf(String.format("%n"));
+        }
+    }
+
+    private String formatBin(int[] bins, int quartile) {
+        if ( quartile >= bins.length ) {
+            return String.format(">%d",bins[bins.length-1]);
+        } else if ( quartile < 0 ) {
+            return String.format("<%d",bins[0]);
+        } else {
+            return String.format("%d",bins[quartile]);
+        }
+    }
+
+    // Creates the output string for base counts
+    private String getBaseCountsString(int[] counts, boolean includeDeletions) {
         if ( counts == null ) {
             counts = new int[6];
         }
@@ -448,9 +493,6 @@ public class CoverageOutputWriter implements Closeable {
 
         return s.toString();
     }
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
 
     @Override
     public void close() {
@@ -459,7 +501,7 @@ public class CoverageOutputWriter implements Closeable {
                 stream.close();
             }
         } catch (IOException e) {
-            throw new GATKException("Error closing output files", e);
+            throw new GATKException("Error closing output files:", e);
         }
     }
 }
